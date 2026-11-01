@@ -273,7 +273,7 @@ docker run --rm -i -v /path/to/your_config.yaml:/app/gateway_config.yaml mcp-gat
 python -m pytest tests/ -v
 
 # Lint
-ruff check mcp_gateway/ tests/ examples/ scripts/
+.venv/bin/ruff check mcp_gateway/ tests/ examples/ scripts/
 ```
 
 104 tests across 7 files:
