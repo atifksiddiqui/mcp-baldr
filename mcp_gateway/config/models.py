@@ -52,6 +52,27 @@ class LoggingConfig(BaseModel):
         return lower
 
 
+class LearningConfig(BaseModel):
+    """Educational protocol inspection configuration (Phase 5).
+
+    When ``learning_mode`` is enabled, the gateway prints rich,
+    tree-formatted JSON-RPC traces to **stderr** for students and
+    developers learning the MCP protocol.  Output never touches
+    stdout, so the underlying stdio transport remains uncorrupted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    learning_mode: bool = Field(
+        default=False,
+        description="Enable educational protocol inspection output on stderr.",
+    )
+    verbose_handshake: bool = Field(
+        default=True,
+        description="Show detailed initialize handshake breakdown when learning_mode is on.",
+    )
+
+
 class StdioServerConfig(BaseModel):
     """Configuration for a single downstream stdio MCP server subprocess.
 
@@ -125,6 +146,10 @@ class GatewayConfig(BaseModel):
     logging: LoggingConfig = Field(
         default_factory=LoggingConfig,
         description="Gateway logging configuration.",
+    )
+    learning: LearningConfig = Field(
+        default_factory=LearningConfig,
+        description="Educational protocol inspection configuration.",
     )
 
     @model_validator(mode="after")

@@ -305,6 +305,8 @@ mcp-gw/
 │   │   └── tool_registry.py   # Multi-server registry with namespace routing
 │   ├── gateway/
 │   │   └── server.py          # Gateway: MCP server loop + routing + crash handling
+│   ├── educational/
+│   │   └── inspector.py       # ProtocolInspector: educational stderr traces
 │   └── logging_utils.py       # Structured JSON logging
 ├── examples/
 │   ├── mock_server.py         # Mock MCP server (default + alt tool sets)
@@ -376,6 +378,59 @@ mcp-gw/
 ### Roadmap
 
 - **Future**: Resource proxying, prompt aggregation, SSE transport, persistence layer
+
+## Phase 5: Educational Harness & Visual Inspection
+
+The gateway includes an optional educational mode that prints richly formatted, tree-like traces of all JSON-RPC traffic to **stderr**. This lets students and developers observe the MCP protocol in real time — `initialize` handshakes, `tools/list` aggregation, `tools/call` routing, namespace resolution, and downstream server communication — without affecting the protocol stream on stdout.
+
+All inspection output goes exclusively to `sys.stderr`. The gateway's `sys.stdout` remains a clean JSON-RPC pipe, so AI clients (Claude Desktop, Cursor, etc.) are never disrupted.
+
+### Configuration
+
+Add a `learning` block to `gateway_config.yaml`:
+
+```yaml
+learning:
+  learning_mode: true        # Enable protocol inspection (default: false)
+  verbose_handshake: true    # Show detailed initialize breakdown (default: true)
+```
+
+If the `learning` block is omitted entirely, learning mode defaults to `false` and the gateway runs in its raw, high-performance proxy mode with zero overhead.
+
+### CLI Flag
+
+Force-enable learning mode from the command line, regardless of config:
+
+```bash
+mcp-gateway gateway_config.yaml --learn
+```
+
+### Tracing During an Active Session
+
+To watch protocol traffic while Claude Desktop (or any MCP host) is connected, redirect stderr to a log file and tail it in a separate terminal:
+
+```bash
+# Terminal 1: Run the gateway, pipe stderr to a trace file
+mcp-gateway gateway_config.yaml --learn 2> trace.log
+
+# Terminal 2: Watch the trace in real time
+tail -f trace.log
+```
+
+Or in your Claude Desktop config, set the gateway command with stderr redirected:
+
+```json
+{
+  "mcpServers": {
+    "gateway": {
+      "command": "/path/to/mcp-gw/.venv/bin/mcp-gateway",
+      "args": ["/path/to/mcp-gw/gateway_config.yaml", "--learn", "2>", "/tmp/mcp-trace.log"]
+    }
+  }
+}
+```
+
+Then `tail -f /tmp/mcp-trace.log` in a terminal to see every request, response, routing decision, and error as it happens.
 
 ## License
 

@@ -26,10 +26,7 @@ class TestConcurrentCalls:
 
         try:
             # Fire 5 echo calls concurrently
-            tasks = [
-                transport.call_tool("echo", {"text": f"msg-{i}"})
-                for i in range(5)
-            ]
+            tasks = [transport.call_tool("echo", {"text": f"msg-{i}"}) for i in range(5)]
             results = await asyncio.gather(*tasks)
 
             texts = sorted(r["content"][0]["text"] for r in results)
@@ -98,12 +95,18 @@ class TestMalformedInput:
 
         try:
             # Send initialize first (needed before other methods)
-            init_req = json.dumps({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {"protocolVersion": "2026-07-28", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}},
-            })
+            init_req = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2026-07-28",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                }
+            )
             proc.stdin.write(init_req.encode() + b"\n")
             await proc.stdin.drain()
             await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
@@ -138,16 +141,26 @@ class TestMalformedInput:
 
         try:
             # Initialize first
-            init_req = json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2026-07-28", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}},
-            })
+            init_req = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2026-07-28",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                }
+            )
             proc.stdin.write(init_req.encode() + b"\n")
             await proc.stdin.drain()
             await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
 
             # Send unknown method
-            unknown_req = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {}})
+            unknown_req = json.dumps(
+                {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {}}
+            )
             proc.stdin.write(unknown_req.encode() + b"\n")
             await proc.stdin.drain()
 
@@ -179,10 +192,18 @@ class TestMalformedInput:
             proc.stdin.write(b"\n")
             await proc.stdin.drain()
 
-            init_req = json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2026-07-28", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}},
-            })
+            init_req = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2026-07-28",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                }
+            )
             proc.stdin.write(init_req.encode() + b"\n")
             await proc.stdin.drain()
 
@@ -203,7 +224,14 @@ class TestRegistryStress:
         """Registry handles many servers with overlapping tool names."""
         registry = ToolRegistry()
         for i in range(20):
-            tools = [{"name": f"tool_{j}", "description": f"Tool {j} from server {i}", "inputSchema": {"type": "object"}} for j in range(5)]
+            tools = [
+                {
+                    "name": f"tool_{j}",
+                    "description": f"Tool {j} from server {i}",
+                    "inputSchema": {"type": "object"},
+                }
+                for j in range(5)
+            ]
             registry.register_server_tools(f"srv_{i:02d}", tools)
 
         assert len(registry) == 100

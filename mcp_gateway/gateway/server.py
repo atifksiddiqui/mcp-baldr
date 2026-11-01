@@ -49,6 +49,7 @@ from typing import Any
 from mcp import types
 
 from mcp_gateway.config import load_config
+from mcp_gateway.educational.inspector import ProtocolInspector
 from mcp_gateway.logging_utils import setup_logging
 from mcp_gateway.registry.tool_registry import ToolRegistry
 from mcp_gateway.transports.stdio import StdioTransport, StdioTransportError
@@ -102,11 +103,16 @@ class Gateway:
     Crash recovery and clean shutdown are handled automatically.
     """
 
-    def __init__(self, config_path: str | Path):
+    def __init__(self, config_path: str | Path, *, force_learning: bool = False):
         self.config = load_config(config_path)
+        if force_learning:
+            self.config.learning.learning_mode = True
         self.registry = ToolRegistry()
         self.transports: dict[str, StdioTransport] = {}
         self._restart_counts: dict[str, int] = {}
+        self.inspector: ProtocolInspector | None = (
+            ProtocolInspector(self.config.learning) if self.config.learning.learning_mode else None
+        )
 
     # -- Lifecycle ------------------------------------------------------------
 
@@ -143,6 +149,9 @@ class Gateway:
                 "total_tools": len(self.registry),
             },
         )
+
+        if self.inspector:
+            self.inspector.gateway_ready(list(self.transports), len(self.registry))
 
     async def stop(self) -> None:
         """Stop all downstream servers and clear the registry."""
@@ -261,6 +270,9 @@ class Gateway:
         if transport is None or not transport.is_running:
             raise ServerNotAvailableError(f"Server '{server_name}' is not available")
 
+        if self.inspector:
+            self.inspector.routing(namespaced_name, server_name, original_name)
+
         logger.info(
             "Routing tool call",
             extra={
@@ -269,7 +281,19 @@ class Gateway:
                 "tool": original_name,
             },
         )
-        return await transport.call_tool(original_name, arguments)
+        if self.inspector:
+            self.inspector.downstream_request(
+                server_name,
+                "tools/call",
+                {"name": original_name, "arguments": arguments or {}},
+            )
+
+        result = await transport.call_tool(original_name, arguments)
+
+        if self.inspector:
+            self.inspector.downstream_response(server_name, "tools/call", result)
+
+        return result
 
     # -- MCP server loop ------------------------------------------------------
 
@@ -349,12 +373,16 @@ class Gateway:
 
             # Notifications (no id) — no response expected.
             if msg_id is None:
+                if self.inspector:
+                    self.inspector.client_notification(method, params)
                 logger.debug(
                     "← notification from client",
                     extra={"method": method},
                 )
                 continue
 
+            if self.inspector:
+                self.inspector.client_request(method, params, msg_id)
             logger.debug(
                 "← request from client",
                 extra={"method": method, "id": msg_id},
@@ -362,20 +390,32 @@ class Gateway:
 
             try:
                 result = await self._handle_request(method, params)
+                if self.inspector:
+                    self.inspector.client_response(method, result, msg_id)
                 self._send_response(msg_id, result)
             except MethodNotFoundError as exc:
+                if self.inspector:
+                    self.inspector.error(msg_id, ERR_METHOD_NOT_FOUND, str(exc))
                 self._send_error(msg_id, ERR_METHOD_NOT_FOUND, str(exc))
             except ToolNotFoundError as exc:
+                if self.inspector:
+                    self.inspector.error(msg_id, ERR_INVALID_PARAMS, str(exc))
                 self._send_error(msg_id, ERR_INVALID_PARAMS, str(exc))
             except ServerNotAvailableError as exc:
+                if self.inspector:
+                    self.inspector.error(msg_id, ERR_INTERNAL, str(exc))
                 self._send_error(msg_id, ERR_INTERNAL, str(exc))
             except StdioTransportError as exc:
+                if self.inspector:
+                    self.inspector.error(msg_id, ERR_INTERNAL, str(exc))
                 self._send_error(msg_id, ERR_INTERNAL, str(exc))
             except Exception as exc:
                 logger.exception(
                     "Unhandled error handling request",
                     extra={"method": method},
                 )
+                if self.inspector:
+                    self.inspector.error(msg_id, ERR_INTERNAL, f"Internal error: {exc}")
                 self._send_error(msg_id, ERR_INTERNAL, f"Internal error: {exc}")
 
     async def _handle_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -430,9 +470,30 @@ def main() -> None:
     Runs the gateway as an MCP stdio server.  An AI client (or another MCP
     host) connects to this process's stdin/stdout.  The gateway exits
     cleanly on EOF, SIGINT, or SIGTERM.
+
+    Flags:
+        config: Path to gateway_config.yaml (default: gateway_config.yaml)
+        --learn: Force-enable educational protocol inspection on stderr
     """
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "gateway_config.yaml"
-    asyncio.run(Gateway(config_path).run())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="MCP Gateway: stdio reverse proxy for MCP servers.",
+    )
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default="gateway_config.yaml",
+        help="Path to gateway_config.yaml (default: gateway_config.yaml)",
+    )
+    parser.add_argument(
+        "--learn",
+        action="store_true",
+        help="Force-enable educational protocol inspection (stderr output).",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(Gateway(args.config, force_learning=args.learn).run())
 
 
 if __name__ == "__main__":
