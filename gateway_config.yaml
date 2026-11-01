@@ -1,0 +1,58 @@
+# Gateway Configuration for the MCP Gateway
+# ──────────────────────────────────────────
+# Define one or more downstream stdio MCP server subprocesses.
+# Each server's tools are namespaced as:  <server_name>__<tool_name>
+#
+# Fields:
+#   name     — unique identifier (lowercase, starts with a letter)
+#   command  — executable to run
+#   args     — arguments passed to the command
+#   env      — extra environment variables (merged with the current env)
+#   enabled  — set to false to skip this server at startup (default: true)
+#   timeout       — seconds to wait for a response (default: 30)
+#   auto_restart  — restart the server if it crashes (default: false)
+#   max_restarts  — max restart attempts before giving up (default: 3)
+
+servers:
+  # Mock server with the default tool set (echo, add).
+  # Provides: mock_a__echo, mock_a__add
+  - name: mock_a
+    command: python3
+    args:
+      - examples/mock_server.py
+    enabled: true
+
+  # Mock server with the alternate tool set (greet, multiply).
+  # Provides: mock_b__greet, mock_b__multiply
+  - name: mock_b
+    command: python3
+    args:
+      - examples/mock_server.py
+    env:
+      MOCK_TOOLS: "alt"
+      MOCK_SERVER_NAME: "mock-server-b"
+    enabled: true
+
+  # ── Example: filesystem server via npx ──────────────────────────
+  # - name: filesystem
+  #   command: npx
+  #   args:
+  #     - "-y"
+  #     - "@modelcontextprotocol/server-filesystem"
+  #     - "/tmp"
+  #   enabled: false
+
+  # ── Example: a custom Python MCP server ──────────────────────────
+  # - name: weather
+  #   command: python
+  #   args:
+  #     - "-m"
+  #     - "my_weather_server"
+  #   env:
+  #     API_KEY: "your-api-key"
+  #   enabled: false
+
+# Logging configuration for the gateway.
+logging:
+  level: INFO        # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  format: json       # json | text
