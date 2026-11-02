@@ -12,6 +12,7 @@ A modular reverse proxy for Model Context Protocol (MCP) servers. The gateway sp
 - **Configurable timeouts** — per-server request timeouts with per-request overrides
 - **Structured JSON logging** — all requests and responses logged for observability
 - **Pure stdio transport** — no HTTP dependency, works with any MCP host
+- **Educational inspection** — optional stderr protocol traces for learning and debugging
 
 ## Prerequisites
 
@@ -59,6 +60,9 @@ python scripts/verify_multi_server.py
 
 # Example MCP client connecting to the gateway as a subprocess
 python scripts/example_client.py gateway_config.yaml
+
+# Educational traffic initiation (offline/online)
+python scripts/learn_traffic_init.py
 ```
 
 The gateway exits cleanly on EOF, SIGINT, or SIGTERM. See the [Configuration](#configuration) section below for customizing `gateway_config.yaml`.
@@ -273,7 +277,7 @@ docker run --rm -i -v /path/to/your_config.yaml:/app/gateway_config.yaml mcp-gat
 python -m pytest tests/ -v
 
 # Lint
-.venv/bin/ruff check mcp_gateway/ tests/ examples/ scripts/
+ruff check mcp_gateway/ tests/ examples/ scripts/
 ```
 
 104 tests across 7 files:
@@ -297,7 +301,7 @@ mcp-gw/
 │       └── ci.yml             # GitHub Actions: lint + test on push/PR
 ├── mcp_gateway/
 │   ├── config/
-│   │   ├── models.py          # Pydantic config models (with resiliency fields)
+│   │   ├── models.py          # Pydantic config models (with resiliency + learning fields)
 │   │   └── loader.py          # YAML parser + validation
 │   ├── transports/
 │   │   └── stdio.py           # StdioTransport: subprocess bridge + crash monitoring
@@ -309,8 +313,9 @@ mcp-gw/
 │   │   └── inspector.py       # ProtocolInspector: educational stderr traces
 │   └── logging_utils.py       # Structured JSON logging
 ├── examples/
-│   ├── mock_server.py         # Mock MCP server (default + alt tool sets)
-│   └── slow_server.py         # Slow MCP server for timeout testing
+│   ├── mock_server.py               # Mock MCP server (default + alt tool sets)
+│   ├── slow_server.py               # Slow MCP server for timeout testing
+│   └── learning_network_config.yaml  # Local + live search config (Phase 6)
 ├── tests/
 │   ├── conftest.py            # Shared fixtures (paths, config helpers)
 │   ├── test_config_loader.py
@@ -323,7 +328,8 @@ mcp-gw/
 ├── scripts/
 │   ├── quick_e2e.py            # Single-server verification
 │   ├── verify_multi_server.py  # Multi-server routing verification
-│   └── example_client.py      # Example MCP client connecting to the gateway
+│   ├── example_client.py      # Example MCP client connecting to the gateway
+│   └── learn_traffic_init.py   # Educational traffic initiation (offline/online)
 ├── .gitignore
 ├── Dockerfile                  # Containerized deployment
 ├── gateway_config.yaml         # Default configuration (two mock servers)
@@ -375,11 +381,25 @@ mcp-gw/
 - [x] Ruff linting and formatting
 - [x] `.gitignore`, `LICENSE`, example configs
 
+### Phase 5: Educational Harness & Visual Inspection
+- [x] `ProtocolInspector` module with tree-formatted stderr traces
+- [x] `LearningConfig` with `learning_mode` and `verbose_handshake` fields
+- [x] `--learn` CLI flag to force-enable inspection from the command line
+- [x] Non-destructive: all output to stderr, stdout protocol stream untouched
+- [x] Global try/except wrapping for silent failure on unexpected errors
+
+### Phase 6: Live Endpoint Testing & Traffic Initiation
+- [x] `learning_network_config.yaml` with local mock + live Brave Search servers
+- [x] `learn_traffic_init.py` with auto-detection of `BRAVE_API_KEY`
+- [x] Offline fallback with educational text blocks (no stack traces)
+- [x] Packet journey visualization on stderr
+- [x] Graceful error handling for missing npx, invalid keys, or network failures
+
 ### Roadmap
 
 - **Future**: Resource proxying, prompt aggregation, SSE transport, persistence layer
 
-## Phase 5: Educational Harness & Visual Inspection
+## Educational Harness & Visual Inspection
 
 The gateway includes an optional educational mode that prints richly formatted, tree-like traces of all JSON-RPC traffic to **stderr**. This lets students and developers observe the MCP protocol in real time — `initialize` handshakes, `tools/list` aggregation, `tools/call` routing, namespace resolution, and downstream server communication — without affecting the protocol stream on stdout.
 
@@ -399,10 +419,11 @@ If the `learning` block is omitted entirely, learning mode defaults to `false` a
 
 ### CLI Flag
 
-Force-enable learning mode from the command line, regardless of config:
+Two ways of running mock with default and enhanced mode. Force-enable learning mode from the command line, regardless of config:
 
 ```bash
 mcp-gateway gateway_config.yaml --learn
+mcp-gateway enhanced_config.yaml --learn
 ```
 
 ### Tracing During an Active Session
@@ -431,6 +452,64 @@ Or in your Claude Desktop config, set the gateway command with stderr redirected
 ```
 
 Then `tail -f /tmp/mcp-trace.log` in a terminal to see every request, response, routing decision, and error as it happens.
+
+## Live Endpoint Testing & Traffic Initiation
+
+Traffic initiation is the act of programmatically generating MCP protocol requests to exercise the full gateway pipeline — from client intent, through namespace routing, to downstream server execution and back. The traffic init utility (`scripts/learn_traffic_init.py`) serves as a mock client that triggers this flow and prints a visual map of every step to stderr.
+
+### Packet Journey
+
+When the traffic init script calls a tool, the request traverses the entire proxy architecture:
+
+```
+Client (learn_traffic_init.py)
+  │  tools/call via stdin (JSON-RPC 2.0)
+  ▼
+Gateway (mcp-gateway)
+  │  resolve namespace → identify server
+  │  forward to subprocess stdin
+  ▼
+Downstream server (local or search)
+  │  execute tool
+  │  return result via stdout
+  ▼
+Gateway → Client (result on stdout)
+```
+
+### Configuration
+
+The learning network config (`examples/learning_network_config.yaml`) defines two server namespaces:
+
+```yaml
+servers:
+  - name: local        # Offline mock server (echo, add)
+    command: python3
+    args: [examples/mock_server.py]
+    enabled: true
+
+  - name: search       # Live Brave Search (requires BRAVE_API_KEY)
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    enabled: false     # Enabled automatically by the traffic init script
+```
+
+### Offline Mode (no API key)
+
+```bash
+.venv/bin/python scripts/learn_traffic_init.py
+
+```
+
+Without `BRAVE_API_KEY`, the script targets the local mock server (`local__echo`) and prints an educational guide explaining how to obtain and configure the Brave Search API key for the live path.
+
+### Online Mode (with API key)
+
+```bash
+export BRAVE_API_KEY="your-api-key"
+python scripts/learn_traffic_init.py
+```
+
+With the API key detected, the script enables the search server in the config, calls the live `search__brave_web_search` tool, and maps the full packet journey through the external endpoint. If the live server fails to start (missing npx, invalid key, network error), the script catches the error, prints an explanation, and falls back to offline mode — no stack trace.
 
 ## License
 

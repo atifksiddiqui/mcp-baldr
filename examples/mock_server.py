@@ -8,6 +8,11 @@ The tool set is selected via the ``MOCK_TOOLS`` environment variable:
 
 - ``default`` (unset): ``echo`` and ``add``
 - ``alt``:           ``greet`` and ``multiply``
+- ``enhanced``:      ``echo``, ``add`` plus three educational tools:
+
+    - ``simulate_visual_report`` — multi-modal content array (text + image)
+    - ``stateful_counter`` — persistent counter across calls
+    - ``trigger_protocol_error`` — structured MCP error payload (isError: true)
 
 The ``serverInfo.name`` can be overridden with ``MOCK_SERVER_NAME``
 (defaults to ``"mock-server"``).
@@ -16,6 +21,7 @@ Usage (standalone, for manual testing)::
 
     python examples/mock_server.py
     MOCK_TOOLS=alt python examples/mock_server.py
+    MOCK_TOOLS=enhanced python examples/mock_server.py
 
 When spawned by StdioTransport the gateway sends JSON-RPC messages over
 this process's stdin and reads responses from stdout.
@@ -26,6 +32,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 # -- Protocol constants --------------------------------------------------------
 
@@ -89,9 +97,67 @@ ALT_TOOLS = [
     },
 ]
 
+# -- Enhanced tool definitions (Phase 1 incremental) -------------------------
+# Educational tools for protocol exploration. Available via MOCK_TOOLS=enhanced.
+
+ENHANCED_TOOLS = [
+    {
+        "name": "simulate_visual_report",
+        "description": (
+            "Educational: returns a multi-modal MCP content array with a text "
+            "summary block and a base64-encoded image block. Demonstrates how "
+            "AI clients parse and render mixed media content from tools/call."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dataset_name": {
+                    "type": "string",
+                    "description": "Name of the dataset to summarize in the text block.",
+                },
+            },
+        },
+    },
+    {
+        "name": "stateful_counter",
+        "description": (
+            "Educational: maintains a persistent counter across calls using a "
+            "state file. Demonstrates how downstream MCP subprocesses preserve "
+            "localized state between independent tools/call invocations."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "increment": {
+                    "type": "integer",
+                    "description": "Amount to add to the counter (default: 1).",
+                },
+            },
+        },
+    },
+    {
+        "name": "trigger_protocol_error",
+        "description": (
+            "Educational: returns a structured MCP error payload (isError: true) "
+            "when crash=true. Demonstrates how AI clients should handle graceful "
+            "protocol-level exceptions from tools without system crashes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "crash": {
+                    "type": "boolean",
+                    "description": "If true, return an MCP error payload (isError: true).",
+                },
+            },
+        },
+    },
+]
+
 _TOOLS_BY_MODE = {
     "default": DEFAULT_TOOLS,
     "alt": ALT_TOOLS,
+    "enhanced": DEFAULT_TOOLS + ENHANCED_TOOLS,
 }
 TOOLS = _TOOLS_BY_MODE.get(os.environ.get("MOCK_TOOLS", "default"), DEFAULT_TOOLS)
 
@@ -157,6 +223,79 @@ def handle_tools_call(req_id: int | str, params: dict) -> str:
         return make_response(
             req_id,
             {"content": [{"type": "text", "text": str(a * b)}], "isError": False},
+        )
+
+    # Enhanced tool set -----------------------------------------------------
+    if name == "simulate_visual_report":
+        dataset = arguments.get("dataset_name", "sample-dataset")
+        # Minimal valid 1x1 PNG as base64 placeholder.
+        base64_png = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+            "AAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        return make_response(
+            req_id,
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Visual report for '{dataset}': 42 records, 3 categories.",
+                    },
+                    {
+                        "type": "image",
+                        "data": base64_png,
+                        "mimeType": "image/png",
+                    },
+                ],
+                "isError": False,
+            },
+        )
+
+    if name == "stateful_counter":
+        increment = arguments.get("increment", 1)
+        state_file = Path(tempfile.gettempdir()) / "mock_server_counter.json"
+        count = 0
+        if state_file.exists():
+            try:
+                count = json.loads(state_file.read_text()).get("count", 0)
+            except (json.JSONDecodeError, KeyError):
+                count = 0
+        count += increment
+        state_file.write_text(json.dumps({"count": count}))
+        return make_response(
+            req_id,
+            {
+                "content": [{"type": "text", "text": f"Cumulative count: {count}"}],
+                "isError": False,
+            },
+        )
+
+    if name == "trigger_protocol_error":
+        should_crash = arguments.get("crash", False)
+        if should_crash:
+            return make_response(
+                req_id,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Protocol error triggered: simulated failure for educational purposes.",
+                        }
+                    ],
+                    "isError": True,
+                },
+            )
+        return make_response(
+            req_id,
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "No error triggered. Set crash=true to simulate a protocol error.",
+                    }
+                ],
+                "isError": False,
+            },
         )
 
     return make_error(req_id, -32601, f"Unknown tool: {name}")

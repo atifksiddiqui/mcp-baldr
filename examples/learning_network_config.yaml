@@ -1,0 +1,40 @@
+# Learning Network Configuration (Phase 6)
+# ─────────────────────────────────────────
+# Defines two server namespaces for educational traffic initiation:
+#
+#   local  — offline mock server (echo, add) — always works
+#   search — live Brave Search MCP server — requires BRAVE_API_KEY + npx
+#
+# The search server is disabled by default.  The traffic init script
+# (scripts/learn_traffic_init.py) will enable it automatically when
+# BRAVE_API_KEY is detected in the environment.
+
+servers:
+  # Offline mock server — zero dependencies, always available.
+  # Exposes: local__echo, local__add
+  - name: local
+    command: python3
+    args:
+      - examples/mock_server.py
+    enabled: true
+
+  # Live Brave Search server — requires:
+  #   1. npx installed (comes with Node.js)
+  #   2. BRAVE_API_KEY environment variable set
+  #      Get a key at: https://api.search.brave.com/
+  #      Export it:   export BRAVE_API_KEY="your-key"
+  # Exposes: search__brave_web_search (tool name may vary by server version)
+  - name: search
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-brave-search"
+    enabled: false
+
+learning:
+  learning_mode: true
+  verbose_handshake: true
+
+logging:
+  level: WARNING
+  format: text

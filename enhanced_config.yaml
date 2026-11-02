@@ -1,0 +1,18 @@
+# Enhanced configuration — exercises the three educational tools.
+# Run with:  mcp-gateway enhanced_config.yaml --learn
+
+servers:
+  - name: enhanced
+    command: python3
+    args:
+      - examples/mock_server.py
+    env:
+      MOCK_TOOLS: "enhanced"
+
+learning:
+  learning_mode: true
+  verbose_handshake: true
+
+logging:
+  level: WARNING
+  format: text
