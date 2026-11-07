@@ -14,9 +14,9 @@ import asyncio
 import sys
 from pathlib import Path
 
-from mcp_gateway.config.models import StdioServerConfig
-from mcp_gateway.logging_utils import setup_logging
-from mcp_gateway.transports.stdio import StdioTransport
+from mcp_baldr.config.models import StdioServerConfig
+from mcp_baldr.logging_utils import setup_logging
+from mcp_baldr.transports.stdio import StdioTransport
 
 
 async def main():
@@ -28,7 +28,7 @@ async def main():
     gateway_config = StdioServerConfig(
         name="gateway",
         command=sys.executable,
-        args=["-m", "mcp_gateway.gateway.server", str(Path(config_path).resolve())],
+        args=["-m", "mcp_baldr.gateway.server", str(Path(config_path).resolve())],
     )
 
     async with StdioTransport(gateway_config, timeout=30.0) as client:

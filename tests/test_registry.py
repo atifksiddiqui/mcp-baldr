@@ -2,7 +2,7 @@
 
 import pytest
 
-from mcp_gateway.registry.tool_registry import (
+from mcp_baldr.registry.tool_registry import (
     NAMESPACE_SEP,
     RegisteredTool,
     ToolRegistry,

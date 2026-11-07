@@ -1,5 +1,5 @@
 # Enhanced configuration — exercises the three educational tools.
-# Run with:  mcp-gateway enhanced_config.yaml --learn
+# Run with:  mcp-baldr enhanced_config.yaml --learn
 
 servers:
   - name: enhanced

@@ -22,9 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.config.models import StdioServerConfig
-from mcp_gateway.gateway.server import Gateway, ToolNotFoundError
-from mcp_gateway.transports.stdio import StdioTransport, StdioTransportError
+from mcp_baldr.config.models import StdioServerConfig
+from mcp_baldr.gateway.server import Gateway, ToolNotFoundError
+from mcp_baldr.transports.stdio import StdioTransport, StdioTransportError
 
 MOCK_SERVER_PATH = str(Path(__file__).resolve().parent.parent / "examples" / "mock_server.py")
 
@@ -169,7 +169,7 @@ class TestGatewayServerLoop:
         gateway_config = StdioServerConfig(
             name="gateway",
             command=sys.executable,
-            args=["-m", "mcp_gateway.gateway.server", str(config_path)],
+            args=["-m", "mcp_baldr.gateway.server", str(config_path)],
             env={"PYTHONPATH": str(Path(__file__).resolve().parent.parent)},
         )
         transport = StdioTransport(gateway_config, timeout=30.0)

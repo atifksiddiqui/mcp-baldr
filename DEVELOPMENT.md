@@ -40,8 +40,8 @@ pip install -e ".[dev]"
 
 ```bash
 # Lint
-ruff check mcp_gateway/ tests/ examples/ scripts/
-ruff format mcp_gateway/ tests/ examples/ scripts/
+ruff check mcp_baldr/ tests/ examples/ scripts/
+ruff format mcp_baldr/ tests/ examples/ scripts/
 
 # Test
 python -m pytest tests/ -v
@@ -55,7 +55,7 @@ python scripts/example_client.py gateway_config.yaml
 ## Release Checklist
 
 - [ ] All tests pass: `python -m pytest tests/ -v`
-- [ ] Lint passes: `ruff check mcp_gateway/ tests/ examples/ scripts/`
+- [ ] Lint passes: `ruff check mcp_baldr/ tests/ examples/ scripts/`
 - [ ] Version bumped in `pyproject.toml`
 - [ ] `README.md` and `DEVELOPMENT.md` are up to date
 - [ ] Commit and tag: `git tag v0.x.0 && git push --tags`

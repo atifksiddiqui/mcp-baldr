@@ -2,7 +2,7 @@
 
 import asyncio
 
-from mcp_gateway.gateway.server import Gateway
+from mcp_baldr.gateway.server import Gateway
 
 
 async def main():

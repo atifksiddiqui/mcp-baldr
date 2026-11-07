@@ -8,9 +8,9 @@ Run with::
 import asyncio
 import sys
 
-from mcp_gateway.config.models import StdioServerConfig
-from mcp_gateway.logging_utils import setup_logging
-from mcp_gateway.transports.stdio import StdioTransport
+from mcp_baldr.config.models import StdioServerConfig
+from mcp_baldr.logging_utils import setup_logging
+from mcp_baldr.transports.stdio import StdioTransport
 
 MOCK_SERVER = str(
     __import__("pathlib").Path(__file__).resolve().parent.parent / "examples" / "mock_server.py"

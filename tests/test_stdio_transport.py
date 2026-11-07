@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.config.models import StdioServerConfig
-from mcp_gateway.transports.stdio import StdioTransport, StdioTransportError
+from mcp_baldr.config.models import StdioServerConfig
+from mcp_baldr.transports.stdio import StdioTransport, StdioTransportError
 
 # Path to the mock server script shipped with the project.
 MOCK_SERVER_PATH = str(Path(__file__).resolve().parent.parent / "examples" / "mock_server.py")

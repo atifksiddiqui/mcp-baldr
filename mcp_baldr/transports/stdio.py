@@ -28,13 +28,13 @@ from typing import Any
 
 from mcp import types
 
-from mcp_gateway.config.models import StdioServerConfig
+from mcp_baldr.config.models import StdioServerConfig
 
 logger = logging.getLogger(__name__)
 
 # Protocol constants -----------------------------------------------------------
 PROTOCOL_VERSION = types.LATEST_PROTOCOL_VERSION
-CLIENT_INFO: dict[str, str] = {"name": "mcp-gateway", "version": "0.1.0"}
+CLIENT_INFO: dict[str, str] = {"name": "mcp-baldr", "version": "0.1.0"}
 DEFAULT_TIMEOUT: float = 30.0
 
 #: Type for the crash callback: ``(server_name, returncode) -> Awaitable[None]``.

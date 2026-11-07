@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from mcp_gateway.config.models import LearningConfig
+from mcp_baldr.config.models import LearningConfig
 
 # -- ANSI color codes ----------------------------------------------------------
 
@@ -43,7 +43,7 @@ _BOX_WIDTH = 72
 class ProtocolInspector:
     """Educational JSON-RPC traffic visualizer.
 
-    Created by :class:`~mcp_gateway.gateway.server.Gateway` when learning
+    Created by :class:`~mcp_baldr.gateway.server.Gateway` when learning
     mode is enabled.  Each public method corresponds to a point in the
     gateway's request-handling pipeline where raw protocol data can be
     observed.

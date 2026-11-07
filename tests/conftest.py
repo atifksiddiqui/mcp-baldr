@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.config.models import StdioServerConfig
+from mcp_baldr.config.models import StdioServerConfig
 
 # -- Paths ---------------------------------------------------------------------
 

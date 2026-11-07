@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.config.models import StdioServerConfig
-from mcp_gateway.gateway.server import Gateway
-from mcp_gateway.transports.stdio import StdioTransport, StdioTransportError
+from mcp_baldr.config.models import StdioServerConfig
+from mcp_baldr.gateway.server import Gateway
+from mcp_baldr.transports.stdio import StdioTransport, StdioTransportError
 
 MOCK_SERVER_PATH = str(Path(__file__).resolve().parent.parent / "examples" / "mock_server.py")
 SLOW_SERVER_PATH = str(Path(__file__).resolve().parent.parent / "examples" / "slow_server.py")
@@ -315,7 +315,7 @@ class TestNoAutoRestart:
                 await asyncio.sleep(0.1)
 
             # Registry is empty, so tool not found
-            from mcp_gateway.gateway.server import ToolNotFoundError
+            from mcp_baldr.gateway.server import ToolNotFoundError
 
             with pytest.raises(ToolNotFoundError):
                 await gw.call_tool("mock__echo", {"text": "test"})
@@ -333,7 +333,7 @@ class TestSignalShutdown:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "mcp_gateway.gateway.server",
+            "mcp_baldr.gateway.server",
             str(config_path),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -361,7 +361,7 @@ class TestSignalShutdown:
             # Read initialize response (gateway startup takes a few seconds).
             line = await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
             resp = json.loads(line)
-            assert resp["result"]["serverInfo"]["name"] == "mcp-gateway"
+            assert resp["result"]["serverInfo"]["name"] == "mcp-baldr"
 
             # Send SIGINT
             proc.send_signal(signal.SIGINT)
@@ -382,7 +382,7 @@ class TestSignalShutdown:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "mcp_gateway.gateway.server",
+            "mcp_baldr.gateway.server",
             str(config_path),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -409,7 +409,7 @@ class TestSignalShutdown:
             # Read initialize response (gateway startup takes a few seconds).
             line = await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
             resp = json.loads(line)
-            assert resp["result"]["serverInfo"]["name"] == "mcp-gateway"
+            assert resp["result"]["serverInfo"]["name"] == "mcp-baldr"
 
             # Send SIGTERM (now that handlers are registered)
             proc.send_signal(signal.SIGTERM)

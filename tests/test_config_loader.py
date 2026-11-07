@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.config.loader import ConfigError, load_config
-from mcp_gateway.config.models import GatewayConfig, StdioServerConfig
+from mcp_baldr.config.loader import ConfigError, load_config
+from mcp_baldr.config.models import GatewayConfig, StdioServerConfig
 
 # -- StdioServerConfig -------------------------------------------------------
 
@@ -87,13 +87,13 @@ class TestLoggingConfig:
         g.logging.level = "debug"  # pydantic validator uppercases
 
     def test_invalid_level(self):
-        from mcp_gateway.config.models import LoggingConfig
+        from mcp_baldr.config.models import LoggingConfig
 
         with pytest.raises(Exception, match="level"):
             LoggingConfig(level="VERBOSE")
 
     def test_invalid_format(self):
-        from mcp_gateway.config.models import LoggingConfig
+        from mcp_baldr.config.models import LoggingConfig
 
         with pytest.raises(Exception, match="format"):
             LoggingConfig(format="xml")

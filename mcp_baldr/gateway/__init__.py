@@ -1,6 +1,6 @@
 """Gateway server entry point."""
 
-from mcp_gateway.gateway.server import (
+from mcp_baldr.gateway.server import (
     Gateway,
     GatewayError,
     MethodNotFoundError,

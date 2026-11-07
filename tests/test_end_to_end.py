@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.config import load_config
-from mcp_gateway.transports.stdio import StdioTransport
+from mcp_baldr.config import load_config
+from mcp_baldr.transports.stdio import StdioTransport
 
 MOCK_SERVER_PATH = str(Path(__file__).resolve().parent.parent / "examples" / "mock_server.py")
 
@@ -80,7 +80,7 @@ async def test_disabled_server_not_started(gateway_yaml: Path):
     """Servers with enabled: false are filtered out by enabled_servers()."""
     config = load_config(gateway_yaml)
     # Add a disabled server to the config.
-    from mcp_gateway.config.models import StdioServerConfig
+    from mcp_baldr.config.models import StdioServerConfig
 
     config.servers.append(StdioServerConfig(name="disabled_one", command="echo", enabled=False))
     enabled = config.enabled_servers()

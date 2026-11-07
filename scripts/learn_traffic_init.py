@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
 """Educational traffic initiation utility (Phase 6).
 
-Spawns the MCP gateway with the learning network config, connects as a
-mock client, and triggers tool calls through both local and live
-namespaces.  All diagnostic output goes to **stderr** to keep the
-gateway's stdout JSON-RPC channel pure.
+Spawns the MCP gateway, connects as a mock client, and triggers tool calls
+to visualize the full packet journey.  All diagnostic output goes to
+**stderr** to keep the gateway's stdout JSON-RPC channel pure.
 
-Behaviour:
-  - If ``BRAVE_API_KEY`` is set in the environment, the script enables
-    the live search server and calls it.
-  - If the key is absent (or the search server fails to start), the
-    script falls back to the local mock server and prints an
-    educational text block explaining how to obtain and configure the
-    missing requirements.
+Modes:
+  - **Auto (default):** Builds a config on the fly.  If ``BRAVE_API_KEY``
+    is set, the live Brave Search server is enabled and called; otherwise
+    only the local mock server is used.
+  - **Explicit config:** Pass ``--config PATH`` to run against any gateway
+    config file (e.g. ``gateway_config.yaml`` for the basic tool set, or
+    ``enhanced_config.yaml`` for the educational tool set).  The script
+    discovers whatever tools the config exposes and calls one of them,
+    regardless of the namespace prefix.
 
 Run::
 
+    # Basic mode — auto-generated config (local mock server)
     python scripts/learn_traffic_init.py
+
+    # Online mode — auto-detects BRAVE_API_KEY and calls the live search
     BRAVE_API_KEY="your-key" python scripts/learn_traffic_init.py
+
+    # Against any config file (basic or enhanced tool sets)
+    python scripts/learn_traffic_init.py --config gateway_config.yaml
+    python scripts/learn_traffic_init.py --config enhanced_config.yaml
 """
 
 from __future__ import annotations
@@ -29,10 +37,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from mcp_gateway.transports.stdio import StdioTransportError
+from mcp_baldr.transports.stdio import StdioTransportError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "examples" / "learning_network_config.yaml"
 MOCK_SERVER = str(PROJECT_ROOT / "examples" / "mock_server.py")
 
 
@@ -114,7 +121,7 @@ async def _spawn_gateway(config_path: Path) -> asyncio.subprocess.Process:
     return await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "mcp_gateway.gateway.server",
+        "mcp_baldr.gateway.server",
         str(config_path),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -176,6 +183,52 @@ def _print_no_api_key_guide() -> None:
     )
 
 
+# -- Tool selection ------------------------------------------------------------
+
+
+def _select_target_tool(tools: list[dict], online: bool) -> tuple[str | None, dict]:
+    """Pick a tool to call and build suitable arguments for it.
+
+    Works with any namespace (``local__``, ``search__``, ``enhanced__``, ...)
+    by matching on the tool's local name after the ``__`` separator.  This
+    keeps the utility consistent across basic and enhanced configs.
+
+    Returns:
+        A ``(namespaced_name, arguments)`` tuple, or ``(None, {})`` if no
+        suitable tool is found.
+    """
+    # Example arguments keyed by the tool's local (un-namespaced) name.
+    arg_templates: dict[str, dict] = {
+        "echo": {"text": "hello from traffic init"},
+        "add": {"a": 7, "b": 35},
+        "greet": {"name": "Developer"},
+        "multiply": {"a": 6, "b": 7},
+        "simulate_visual_report": {"dataset_name": "quarterly-metrics"},
+        "stateful_counter": {"increment": 1},
+        "trigger_protocol_error": {"crash": True},
+    }
+
+    def local_name(ns_name: str) -> str:
+        return ns_name.split("__", 1)[-1]
+
+    # Prefer a live search tool when running online.
+    if online:
+        for t in tools:
+            if "search" in local_name(t["name"]).lower():
+                return t["name"], {"query": "Model Context Protocol Python"}
+
+    # Otherwise pick the first tool with a known argument template.
+    for t in tools:
+        if local_name(t["name"]) in arg_templates:
+            return t["name"], arg_templates[local_name(t["name"])]
+
+    # Fall back to the first tool with empty arguments.
+    if tools:
+        return tools[0]["name"], {}
+
+    return None, {}
+
+
 # -- Main flow -----------------------------------------------------------------
 
 
@@ -192,13 +245,18 @@ async def main(config_path: Path | None = None) -> None:
     )
     _log("")
 
+    # Only print the no-key guide for auto mode; an explicit config is the
+    # user's choice and doesn't need the Brave onboarding block.
     if not has_api_key and config_path is None:
         _print_no_api_key_guide()
         _log("")
 
     # Step 1: Build or use config and spawn gateway.
+    # ``owns_config`` is True only for auto-generated temp files, so we never
+    # delete a user-supplied config during cleanup.
+    owns_config = config_path is None
     if config_path is not None:
-        _log(f"Step 1: Using config: {config_path}")
+        _log(f"Step 1: Using provided config: {config_path}")
     else:
         _log("Step 1: Building gateway configuration...")
         yaml_text = _build_config(online=has_api_key)
@@ -213,7 +271,8 @@ async def main(config_path: Path | None = None) -> None:
         stderr_bytes = await proc.stderr.read() if proc.stderr else b""
         stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
 
-        if has_api_key:
+        # Auto mode with a live key: fall back to a generated offline config.
+        if has_api_key and owns_config:
             _log("")
             _print_offline_fallback(stderr_text)
             _log("")
@@ -221,6 +280,7 @@ async def main(config_path: Path | None = None) -> None:
             config_path.unlink(missing_ok=True)
             yaml_text = _build_config(online=False)
             config_path = _write_temp_config(yaml_text)
+            owns_config = True
             proc = await _spawn_gateway(config_path)
             if not await _gateway_alive(proc):
                 _log(f"{_RED}Gateway failed to start even in offline mode{_RESET}")
@@ -229,6 +289,17 @@ async def main(config_path: Path | None = None) -> None:
         else:
             _log(f"{_RED}Gateway failed to start{_RESET}")
             _log(f"{_DIM}{stderr_text[:500]}{_RESET}")
+            if not owns_config:
+                _log("")
+                _log(f"{_YELLOW}Check that the servers in your config can start:{_RESET}")
+                _log_block(
+                    [
+                        f"  config: {config_path}",
+                        "  - Are the command/args correct?",
+                        "  - Are required env vars (API keys) set?",
+                        "  - Is the executable (python3, npx, uvx) on PATH?",
+                    ]
+                )
             return
 
     _log(f"  Gateway process: PID {proc.pid}")
@@ -256,7 +327,8 @@ async def main(config_path: Path | None = None) -> None:
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
-        config_path.unlink(missing_ok=True)
+        if owns_config:
+            config_path.unlink(missing_ok=True)
         _log("Done.")
 
 
@@ -319,29 +391,15 @@ async def _run_client(proc: asyncio.subprocess.Process, online: bool) -> None:
         _log(f"     {t['name']}: {t.get('description', '')}")
     _log("")
 
-    # Step 6: Select and call the target tool.
-    search_tools = [t for t in tools if t["name"].startswith("search__")]
-    local_tools = [t for t in tools if t["name"].startswith("local__")]
-
-    if online and search_tools:
-        target = search_tools[0]["name"]
-        args = {"query": "Model Context Protocol Python"}
-        _log(f"Step 6: Calling live search tool: {_GREEN}{target}{_RESET}")
-        _log(f'  → Client sends tools/call (name: "{target}", arguments: {json.dumps(args)})')
-    elif local_tools:
-        target = "local__echo"
-        args = {"text": "hello from traffic init"}
-        if online and not search_tools:
-            _log(f"{_YELLOW}Search server did not register any tools{_RESET}")
-            _log("Falling back to local mock server.")
-            _log("")
-        _log(f"Step 6: Calling local mock tool: {_GREEN}{target}{_RESET}")
-        _log(f'  → Client sends tools/call (name: "{target}", arguments: {json.dumps(args)})')
-    else:
-        _log(f"{_RED}No tools available{_RESET}")
+    # Step 6: Select and call the target tool (namespace-agnostic).
+    target, args = _select_target_tool(tools, online)
+    if target is None:
+        _log(f"{_RED}No callable tool found in the discovered tool set{_RESET}")
         return
+    _log(f"Step 6: Calling tool: {_GREEN}{target}{_RESET}")
+    _log(f'  → Client sends tools/call (name: "{target}", arguments: {json.dumps(args)})')
 
-    # Step 7: Show namespace resolution (handled by gateway inspector on stderr).
+    # Step 7: Show namespace resolution (also traced by the gateway inspector).
     _log("  → Gateway resolves namespace:")
     parts = target.split("__", 1)
     if len(parts) == 2:
@@ -359,12 +417,17 @@ async def _run_client(proc: asyncio.subprocess.Process, online: bool) -> None:
     _log("Step 7: Result received:")
     content = result.get("content", [])
     for item in content:
-        if item.get("type") == "text":
+        item_type = item.get("type")
+        if item_type == "text":
             text = item.get("text", "")
-            # Truncate long search results for readability.
             if len(text) > 200:
                 text = text[:200] + "..."
-            _log(f'  content: "{text}"')
+            _log(f'  content[text]: "{text}"')
+        elif item_type == "image":
+            data = item.get("data", "")
+            _log(f"  content[image]: {item.get('mimeType', 'image')} ({len(data)} base64 chars)")
+        else:
+            _log(f"  content[{item_type}]: {json.dumps(item)[:120]}")
     _log(f"  isError: {result.get('isError', False)}")
     _log("")
 
@@ -377,7 +440,7 @@ async def _run_client(proc: asyncio.subprocess.Process, online: bool) -> None:
             "    │",
             "    │  tools/call via stdin (JSON-RPC 2.0)",
             "    ▼",
-            "  Gateway (mcp-gateway)",
+            "  Gateway (mcp-baldr)",
             "    │  resolve namespace → identify server",
             "    │  forward to subprocess stdin",
             "    ▼",
@@ -392,8 +455,29 @@ async def _run_client(proc: asyncio.subprocess.Process, online: bool) -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Educational traffic initiation utility for the MCP Gateway. "
+            "Runs in auto mode by default, or against any config via --config."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a gateway config YAML (e.g. gateway_config.yaml or "
+            "enhanced_config.yaml). If omitted, a config is auto-generated "
+            "based on whether BRAVE_API_KEY is set."
+        ),
+    )
+    cli_args = parser.parse_args()
+
     try:
-        asyncio.run(main())
+        asyncio.run(main(config_path=cli_args.config))
     except KeyboardInterrupt:
         _log("Interrupted.")
     except Exception as exc:

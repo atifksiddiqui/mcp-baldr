@@ -43,23 +43,26 @@ import json
 import logging
 import signal
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
 from mcp import types
 
-from mcp_gateway.config import load_config
-from mcp_gateway.educational.inspector import ProtocolInspector
-from mcp_gateway.logging_utils import setup_logging
-from mcp_gateway.registry.tool_registry import ToolRegistry
-from mcp_gateway.transports.stdio import StdioTransport, StdioTransportError
+from mcp_baldr.config import load_config
+from mcp_baldr.educational.inspector import ProtocolInspector
+from mcp_baldr.learning.event_collector import EventCollector
+from mcp_baldr.learning.events import CapabilityCategory, ProcessingStage
+from mcp_baldr.logging_utils import setup_logging
+from mcp_baldr.registry.tool_registry import ToolRegistry
+from mcp_baldr.transports.stdio import StdioTransport, StdioTransportError
 
 logger = logging.getLogger(__name__)
 
 # -- Protocol constants --------------------------------------------------------
 
 PROTOCOL_VERSION = types.LATEST_PROTOCOL_VERSION
-GATEWAY_INFO: dict[str, str] = {"name": "mcp-gateway", "version": "0.1.0"}
+GATEWAY_INFO: dict[str, str] = {"name": "mcp-baldr", "version": "0.1.0"}
 
 
 # -- Exceptions ----------------------------------------------------------------
@@ -110,8 +113,17 @@ class Gateway:
         self.registry = ToolRegistry()
         self.transports: dict[str, StdioTransport] = {}
         self._restart_counts: dict[str, int] = {}
+        # Educational layer (Learning Lab).  The inspector renders to stderr;
+        # the collector stores sanitized, queryable events.  They are
+        # independent siblings, both created only when learning mode is on and
+        # both ``None`` otherwise, so the protocol path does zero educational
+        # work when disabled.
+        learning_on = self.config.learning.learning_mode
         self.inspector: ProtocolInspector | None = (
-            ProtocolInspector(self.config.learning) if self.config.learning.learning_mode else None
+            ProtocolInspector(self.config.learning) if learning_on else None
+        )
+        self.collector: EventCollector | None = (
+            EventCollector(session_id=uuid.uuid4().hex) if learning_on else None
         )
 
     # -- Lifecycle ------------------------------------------------------------
@@ -152,6 +164,14 @@ class Gateway:
 
         if self.inspector:
             self.inspector.gateway_ready(list(self.transports), len(self.registry))
+        if self.collector is not None:
+            self.collector.record(
+                ProcessingStage.GATEWAY_READY,
+                metadata={
+                    "servers": list(self.transports),
+                    "tool_count": len(self.registry),
+                },
+            )
 
     async def stop(self) -> None:
         """Stop all downstream servers and clear the registry."""
@@ -272,6 +292,17 @@ class Gateway:
 
         if self.inspector:
             self.inspector.routing(namespaced_name, server_name, original_name)
+        if self.collector is not None:
+            self.collector.record(
+                ProcessingStage.NAMESPACE_RESOLUTION,
+                downstream_server=server_name,
+                category=CapabilityCategory.TOOLS,
+                metadata={
+                    "requested": namespaced_name,
+                    "resolved_server": server_name,
+                    "resolved_tool": original_name,
+                },
+            )
 
         logger.info(
             "Routing tool call",
@@ -287,11 +318,26 @@ class Gateway:
                 "tools/call",
                 {"name": original_name, "arguments": arguments or {}},
             )
+        if self.collector is not None:
+            self.collector.record(
+                ProcessingStage.DOWNSTREAM_REQUEST,
+                method="tools/call",
+                downstream_server=server_name,
+                metadata={"name": original_name, "arguments": arguments or {}},
+            )
 
         result = await transport.call_tool(original_name, arguments)
 
         if self.inspector:
             self.inspector.downstream_response(server_name, "tools/call", result)
+        if self.collector is not None:
+            self.collector.record(
+                ProcessingStage.DOWNSTREAM_RESPONSE,
+                method="tools/call",
+                downstream_server=server_name,
+                success=not result.get("isError", False),
+                metadata={"result": result},
+            )
 
         return result
 
@@ -375,6 +421,12 @@ class Gateway:
             if msg_id is None:
                 if self.inspector:
                     self.inspector.client_notification(method, params)
+                if self.collector is not None:
+                    self.collector.record(
+                        ProcessingStage.CLIENT_NOTIFICATION,
+                        method=method,
+                        metadata={"params": params},
+                    )
                 logger.debug(
                     "← notification from client",
                     extra={"method": method},
@@ -383,6 +435,13 @@ class Gateway:
 
             if self.inspector:
                 self.inspector.client_request(method, params, msg_id)
+            if self.collector is not None:
+                self.collector.record(
+                    ProcessingStage.CLIENT_REQUEST,
+                    method=method,
+                    request_id=msg_id,
+                    metadata={"params": params},
+                )
             logger.debug(
                 "← request from client",
                 extra={"method": method, "id": msg_id},
@@ -392,30 +451,33 @@ class Gateway:
                 result = await self._handle_request(method, params)
                 if self.inspector:
                     self.inspector.client_response(method, result, msg_id)
+                if self.collector is not None:
+                    self.collector.record(
+                        ProcessingStage.CLIENT_RESPONSE,
+                        method=method,
+                        request_id=msg_id,
+                        success=True,
+                        metadata={"result": result},
+                    )
                 self._send_response(msg_id, result)
             except MethodNotFoundError as exc:
-                if self.inspector:
-                    self.inspector.error(msg_id, ERR_METHOD_NOT_FOUND, str(exc))
+                self._record_error(msg_id, ERR_METHOD_NOT_FOUND, str(exc))
                 self._send_error(msg_id, ERR_METHOD_NOT_FOUND, str(exc))
             except ToolNotFoundError as exc:
-                if self.inspector:
-                    self.inspector.error(msg_id, ERR_INVALID_PARAMS, str(exc))
+                self._record_error(msg_id, ERR_INVALID_PARAMS, str(exc))
                 self._send_error(msg_id, ERR_INVALID_PARAMS, str(exc))
             except ServerNotAvailableError as exc:
-                if self.inspector:
-                    self.inspector.error(msg_id, ERR_INTERNAL, str(exc))
+                self._record_error(msg_id, ERR_INTERNAL, str(exc))
                 self._send_error(msg_id, ERR_INTERNAL, str(exc))
             except StdioTransportError as exc:
-                if self.inspector:
-                    self.inspector.error(msg_id, ERR_INTERNAL, str(exc))
+                self._record_error(msg_id, ERR_INTERNAL, str(exc))
                 self._send_error(msg_id, ERR_INTERNAL, str(exc))
             except Exception as exc:
                 logger.exception(
                     "Unhandled error handling request",
                     extra={"method": method},
                 )
-                if self.inspector:
-                    self.inspector.error(msg_id, ERR_INTERNAL, f"Internal error: {exc}")
+                self._record_error(msg_id, ERR_INTERNAL, f"Internal error: {exc}")
                 self._send_error(msg_id, ERR_INTERNAL, f"Internal error: {exc}")
 
     async def _handle_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -437,6 +499,24 @@ class Gateway:
             "capabilities": {"tools": {}},
             "serverInfo": GATEWAY_INFO,
         }
+
+    # -- Educational error recording ------------------------------------------
+
+    def _record_error(self, msg_id: int | str | None, code: int, message: str) -> None:
+        """Emit an error to the inspector and collector (if learning is on).
+
+        Keeps the educational concerns in one place so the error handlers in
+        ``_serve`` stay readable.  A no-op when learning mode is disabled.
+        """
+        if self.inspector:
+            self.inspector.error(msg_id, code, message)
+        if self.collector is not None:
+            self.collector.record(
+                ProcessingStage.ERROR,
+                request_id=msg_id,
+                success=False,
+                metadata={"code": code, "message": message},
+            )
 
     # -- JSON-RPC output helpers ----------------------------------------------
 
@@ -465,7 +545,7 @@ class Gateway:
 
 
 def main() -> None:
-    """Entry point for the ``mcp-gateway`` CLI command.
+    """Entry point for the ``mcp-baldr`` CLI command.
 
     Runs the gateway as an MCP stdio server.  An AI client (or another MCP
     host) connects to this process's stdin/stdout.  The gateway exits

@@ -2,7 +2,7 @@
 
 Usage::
 
-    from mcp_gateway.config import load_config
+    from mcp_baldr.config import load_config
 
     config = load_config("gateway_config.yaml")
     for server in config.enabled_servers():
@@ -18,7 +18,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from mcp_gateway.config.models import GatewayConfig
+from mcp_baldr.config.models import GatewayConfig
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def load_config(path: str | Path) -> GatewayConfig:
         path: Path to the YAML configuration file.
 
     Returns:
-        A validated :class:`~mcp_gateway.config.models.GatewayConfig`.
+        A validated :class:`~mcp_baldr.config.models.GatewayConfig`.
 
     Raises:
         ConfigError: If the file does not exist, is not valid YAML,

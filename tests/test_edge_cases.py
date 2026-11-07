@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.gateway.server import Gateway
-from mcp_gateway.logging_utils import _JsonFormatter, _TextFormatter, setup_logging
-from mcp_gateway.registry.tool_registry import ToolRegistry
-from mcp_gateway.transports.stdio import StdioTransport
+from mcp_baldr.gateway.server import Gateway
+from mcp_baldr.logging_utils import _JsonFormatter, _TextFormatter, setup_logging
+from mcp_baldr.registry.tool_registry import ToolRegistry
+from mcp_baldr.transports.stdio import StdioTransport
 from tests.conftest import make_mock_server_config, write_two_server_config
 
 # -- Concurrent tool calls ----------------------------------------------------
@@ -86,7 +86,7 @@ class TestMalformedInput:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "mcp_gateway.gateway.server",
+            "mcp_baldr.gateway.server",
             str(config_path),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -132,7 +132,7 @@ class TestMalformedInput:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "mcp_gateway.gateway.server",
+            "mcp_baldr.gateway.server",
             str(config_path),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -180,7 +180,7 @@ class TestMalformedInput:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "mcp_gateway.gateway.server",
+            "mcp_baldr.gateway.server",
             str(config_path),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -210,7 +210,7 @@ class TestMalformedInput:
             # Should get the initialize response (empty line ignored)
             line = await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
             resp = json.loads(line)
-            assert resp["result"]["serverInfo"]["name"] == "mcp-gateway"
+            assert resp["result"]["serverInfo"]["name"] == "mcp-baldr"
         finally:
             proc.stdin.close()
             await asyncio.wait_for(proc.wait(), timeout=10.0)

@@ -1,4 +1,4 @@
-# Enterprise MCP Gateway
+# Baldr MCP Gateway (mcp-baldr)
 
 A modular reverse proxy for Model Context Protocol (MCP) servers. The gateway spawns downstream `stdio` MCP server subprocesses, aggregates their tools under namespaced names, and exposes a unified MCP server interface to AI clients.
 
@@ -12,7 +12,7 @@ A modular reverse proxy for Model Context Protocol (MCP) servers. The gateway sp
 - **Configurable timeouts** — per-server request timeouts with per-request overrides
 - **Structured JSON logging** — all requests and responses logged for observability
 - **Pure stdio transport** — no HTTP dependency, works with any MCP host
-- **Educational inspection** — optional stderr protocol traces for learning and debugging
+- **Educational inspection** — optional stderr protocol traces for learning and debugging (see [docs/LEARNING.md](docs/LEARNING.md))
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ pip install .
 python scripts/quick_e2e.py
 
 # 3. Run the gateway (connects an AI client via stdin/stdout)
-mcp-gateway gateway_config.yaml
+mcp-baldr gateway_config.yaml
 ```
 
 Expected output from step 2:
@@ -74,7 +74,7 @@ The gateway exits cleanly on EOF, SIGINT, or SIGTERM. See the [Configuration](#c
     │  stdin/stdout (JSON-RPC 2.0)
     ▼
 ┌──────────────────────────────────────────────────┐
-│                   MCP Gateway                      │
+│                Baldr MCP Gateway                   │
 │                                                    │
 │  Config Loader ── Pydantic + YAML validation       │
 │  ToolRegistry  ── namespaced tool aggregation     │
@@ -179,8 +179,8 @@ Add the gateway to your `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "gateway": {
-      "command": "/path/to/mcp-gw/.venv/bin/mcp-gateway",
+    "baldr": {
+      "command": "/path/to/mcp-gw/.venv/bin/mcp-baldr",
       "args": ["/path/to/mcp-gw/gateway_config.yaml"]
     }
   }
@@ -192,14 +192,14 @@ Add the gateway to your `claude_desktop_config.json`:
 Point your MCP client at the gateway command:
 
 ```bash
-mcp-gateway /path/to/gateway_config.yaml
+mcp-baldr /path/to/gateway_config.yaml
 ```
 
 ### Programmatic (Python)
 
 ```python
 import asyncio
-from mcp_gateway.gateway.server import Gateway
+from mcp_baldr.gateway.server import Gateway
 
 async def main():
     async with Gateway("gateway_config.yaml") as gw:
@@ -257,17 +257,29 @@ The gateway handles SIGINT and SIGTERM by:
 
 Each server has a configurable `timeout` (default 30s). If a downstream server doesn't respond within the timeout, the request fails with a `StdioTransportError` and the client receives a JSON-RPC error response. Per-request timeouts can also override the config default.
 
+## Learning & Protocol Inspection
+
+Baldr includes an educational mode that prints tree-formatted JSON-RPC traces to **stderr** so you can watch the MCP protocol flow in real time — handshakes, tool discovery, namespace routing, and downstream communication — without disrupting the stdout protocol stream. Enable it with the `--learn` flag:
+
+```bash
+mcp-baldr gateway_config.yaml --learn
+```
+
+There's also a traffic initiation utility (`scripts/learn_traffic_init.py`) that acts as a mock client and visualizes the full packet journey, plus an enhanced mock tool set demonstrating multi-modal output, state persistence, and protocol errors.
+
+**See the full [Learning Guide](docs/LEARNING.md)** for inspection configuration, session tracing, traffic initiation (offline/online), and the enhanced educational tools.
+
 ## Docker
 
 ```bash
 # Build the image
-docker build -t mcp-gateway .
+docker build -t mcp-baldr .
 
 # Run with the default config (reads from stdin)
-docker run --rm -i mcp-gateway
+docker run --rm -i mcp-baldr
 
 # Or mount your own config
-docker run --rm -i -v /path/to/your_config.yaml:/app/gateway_config.yaml mcp-gateway
+docker run --rm -i -v /path/to/your_config.yaml:/app/gateway_config.yaml mcp-baldr
 ```
 
 ## Testing
@@ -277,7 +289,7 @@ docker run --rm -i -v /path/to/your_config.yaml:/app/gateway_config.yaml mcp-gat
 python -m pytest tests/ -v
 
 # Lint
-ruff check mcp_gateway/ tests/ examples/ scripts/
+ruff check mcp_baldr/ tests/ examples/ scripts/
 ```
 
 104 tests across 7 files:
@@ -299,7 +311,7 @@ mcp-gw/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml             # GitHub Actions: lint + test on push/PR
-├── mcp_gateway/
+├── mcp_baldr/
 │   ├── config/
 │   │   ├── models.py          # Pydantic config models (with resiliency + learning fields)
 │   │   └── loader.py          # YAML parser + validation
@@ -313,9 +325,9 @@ mcp-gw/
 │   │   └── inspector.py       # ProtocolInspector: educational stderr traces
 │   └── logging_utils.py       # Structured JSON logging
 ├── examples/
-│   ├── mock_server.py               # Mock MCP server (default + alt tool sets)
+│   ├── mock_server.py               # Mock MCP server (default + alt + enhanced tool sets)
 │   ├── slow_server.py               # Slow MCP server for timeout testing
-│   └── learning_network_config.yaml  # Local + live search config (Phase 6)
+│   └── learning_network_config.yaml  # Local + live search config
 ├── tests/
 │   ├── conftest.py            # Shared fixtures (paths, config helpers)
 │   ├── test_config_loader.py
@@ -330,9 +342,12 @@ mcp-gw/
 │   ├── verify_multi_server.py  # Multi-server routing verification
 │   ├── example_client.py      # Example MCP client connecting to the gateway
 │   └── learn_traffic_init.py   # Educational traffic initiation (offline/online)
+├── docs/
+│   └── LEARNING.md             # Educational guide: inspection + traffic initiation
 ├── .gitignore
 ├── Dockerfile                  # Containerized deployment
 ├── gateway_config.yaml         # Default configuration (two mock servers)
+├── enhanced_config.yaml        # Enhanced educational tool set config
 ├── LICENSE
 └── pyproject.toml
 ```
@@ -342,7 +357,7 @@ mcp-gw/
 1. Fork the repo and clone your fork
 2. Create a venv and install dev dependencies: `pip install -e ".[dev]"`
 3. Make your changes
-4. Run lint: `ruff check mcp_gateway/ tests/ examples/ scripts/`
+4. Run lint: `ruff check mcp_baldr/ tests/ examples/ scripts/`
 5. Run tests: `python -m pytest tests/ -v`
 6. Add tests for any new functionality
 7. Submit a pull request
@@ -398,118 +413,6 @@ mcp-gw/
 ### Roadmap
 
 - **Future**: Resource proxying, prompt aggregation, SSE transport, persistence layer
-
-## Educational Harness & Visual Inspection
-
-The gateway includes an optional educational mode that prints richly formatted, tree-like traces of all JSON-RPC traffic to **stderr**. This lets students and developers observe the MCP protocol in real time — `initialize` handshakes, `tools/list` aggregation, `tools/call` routing, namespace resolution, and downstream server communication — without affecting the protocol stream on stdout.
-
-All inspection output goes exclusively to `sys.stderr`. The gateway's `sys.stdout` remains a clean JSON-RPC pipe, so AI clients (Claude Desktop, Cursor, etc.) are never disrupted.
-
-### Configuration
-
-Add a `learning` block to `gateway_config.yaml`:
-
-```yaml
-learning:
-  learning_mode: true        # Enable protocol inspection (default: false)
-  verbose_handshake: true    # Show detailed initialize breakdown (default: true)
-```
-
-If the `learning` block is omitted entirely, learning mode defaults to `false` and the gateway runs in its raw, high-performance proxy mode with zero overhead.
-
-### CLI Flag
-
-Two ways of running mock with default and enhanced mode. Force-enable learning mode from the command line, regardless of config:
-
-```bash
-mcp-gateway gateway_config.yaml --learn
-mcp-gateway enhanced_config.yaml --learn
-```
-
-### Tracing During an Active Session
-
-To watch protocol traffic while Claude Desktop (or any MCP host) is connected, redirect stderr to a log file and tail it in a separate terminal:
-
-```bash
-# Terminal 1: Run the gateway, pipe stderr to a trace file
-mcp-gateway gateway_config.yaml --learn 2> trace.log
-
-# Terminal 2: Watch the trace in real time
-tail -f trace.log
-```
-
-Or in your Claude Desktop config, set the gateway command with stderr redirected:
-
-```json
-{
-  "mcpServers": {
-    "gateway": {
-      "command": "/path/to/mcp-gw/.venv/bin/mcp-gateway",
-      "args": ["/path/to/mcp-gw/gateway_config.yaml", "--learn", "2>", "/tmp/mcp-trace.log"]
-    }
-  }
-}
-```
-
-Then `tail -f /tmp/mcp-trace.log` in a terminal to see every request, response, routing decision, and error as it happens.
-
-## Live Endpoint Testing & Traffic Initiation
-
-Traffic initiation is the act of programmatically generating MCP protocol requests to exercise the full gateway pipeline — from client intent, through namespace routing, to downstream server execution and back. The traffic init utility (`scripts/learn_traffic_init.py`) serves as a mock client that triggers this flow and prints a visual map of every step to stderr.
-
-### Packet Journey
-
-When the traffic init script calls a tool, the request traverses the entire proxy architecture:
-
-```
-Client (learn_traffic_init.py)
-  │  tools/call via stdin (JSON-RPC 2.0)
-  ▼
-Gateway (mcp-gateway)
-  │  resolve namespace → identify server
-  │  forward to subprocess stdin
-  ▼
-Downstream server (local or search)
-  │  execute tool
-  │  return result via stdout
-  ▼
-Gateway → Client (result on stdout)
-```
-
-### Configuration
-
-The learning network config (`examples/learning_network_config.yaml`) defines two server namespaces:
-
-```yaml
-servers:
-  - name: local        # Offline mock server (echo, add)
-    command: python3
-    args: [examples/mock_server.py]
-    enabled: true
-
-  - name: search       # Live Brave Search (requires BRAVE_API_KEY)
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-brave-search"]
-    enabled: false     # Enabled automatically by the traffic init script
-```
-
-### Offline Mode (no API key)
-
-```bash
-.venv/bin/python scripts/learn_traffic_init.py
-
-```
-
-Without `BRAVE_API_KEY`, the script targets the local mock server (`local__echo`) and prints an educational guide explaining how to obtain and configure the Brave Search API key for the live path.
-
-### Online Mode (with API key)
-
-```bash
-export BRAVE_API_KEY="your-api-key"
-python scripts/learn_traffic_init.py
-```
-
-With the API key detected, the script enables the search server in the config, calls the live `search__brave_web_search` tool, and maps the full packet journey through the external endpoint. If the live server fails to start (missing npx, invalid key, network error), the script catches the error, prints an explanation, and falls back to offline mode — no stack trace.
 
 ## License
 
