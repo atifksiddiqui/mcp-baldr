@@ -157,9 +157,11 @@ class TestMalformedInput:
             await proc.stdin.drain()
             await asyncio.wait_for(proc.stdout.readline(), timeout=15.0)
 
-            # Send unknown method
+            # Send a genuinely unsupported method.  (resources/read is now a
+            # real gateway method as of Stage 3, so use one not yet
+            # implemented to probe method-not-found handling.)
             unknown_req = json.dumps(
-                {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {}}
+                {"jsonrpc": "2.0", "id": 2, "method": "nonexistent/method", "params": {}}
             )
             proc.stdin.write(unknown_req.encode() + b"\n")
             await proc.stdin.drain()

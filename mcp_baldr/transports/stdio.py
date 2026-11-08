@@ -5,7 +5,12 @@ over stdin/stdout, and correlates requests with responses by ``id``.
 
 Includes a background process monitor that detects unexpected subprocess
 crashes, rejects in-flight requests, and optionally fires a crash callback
-so the gateway can auto-restart the server.
+so the gateway can auto-restart the server.  Server-originated notifications
+(e.g. ``notifications/resources/updated``) are surfaced to an optional
+notification callback, and server-originated *requests* (e.g.
+``sampling/createMessage``, ``elicitation/create``, ``roots/list``) are
+surfaced to an optional request callback so the gateway can relay them to the
+upstream client and send the response back down.
 
 Typical usage::
 
@@ -40,6 +45,17 @@ DEFAULT_TIMEOUT: float = 30.0
 #: Type for the crash callback: ``(server_name, returncode) -> Awaitable[None]``.
 CrashCallback = Callable[[str, int], Awaitable[None]]
 
+#: Type for the notification callback invoked when the downstream server sends
+#: a server-originated notification: ``(server_name, method, params) -> Awaitable[None]``.
+NotificationCallback = Callable[[str, str, dict[str, Any]], Awaitable[None]]
+
+#: Type for the request callback invoked when the downstream server sends a
+#: server-originated *request* (a message with both an ``id`` and a
+#: ``method``).  The callback receives ``(server_name, request_id, method,
+#: params)`` and is responsible for producing a response via
+#: :meth:`StdioTransport.send_response` or :meth:`send_error_response`.
+RequestCallback = Callable[[str, "int | str", str, dict[str, Any]], Awaitable[None]]
+
 
 class StdioTransportError(Exception):
     """Raised when the stdio transport encounters an unrecoverable error."""
@@ -53,7 +69,9 @@ class StdioTransport:
 
     A background monitor task detects unexpected subprocess exits (crashes),
     rejects in-flight requests, and invokes the registered crash callback if
-    one is set.
+    one is set.  Server-originated notifications are forwarded to the
+    registered notification callback, and server-originated requests to the
+    registered request callback, if set.
     """
 
     def __init__(self, config: StdioServerConfig, timeout: float | None = None):
@@ -69,12 +87,22 @@ class StdioTransport:
         self._initialized: bool = False
         self._stderr_lines: list[str] = []
         self._start_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
 
         # Lifecycle / crash tracking
         self._stopping: bool = False
         self._crashed: bool = False
         self._crash_reason: str | None = None
         self._on_crash: CrashCallback | None = None
+
+        # Capability negotiation results (populated by initialize()).
+        self._server_capabilities: dict[str, Any] = {}
+        self._server_protocol_version: str | None = None
+        self._server_info: dict[str, Any] = {}
+
+        # Server-originated message callbacks (Stage 5 / Stage 7).
+        self._on_notification: NotificationCallback | None = None
+        self._on_request: RequestCallback | None = None
 
     # -- Properties -----------------------------------------------------------
 
@@ -113,7 +141,22 @@ class StdioTransport:
         """Human-readable reason for the last crash, or ``None``."""
         return self._crash_reason
 
-    # -- Crash callback -------------------------------------------------------
+    @property
+    def server_capabilities(self) -> dict[str, Any]:
+        """Capabilities advertised by this downstream in its initialize result."""
+        return dict(self._server_capabilities)
+
+    @property
+    def server_protocol_version(self) -> str | None:
+        """Protocol version this downstream negotiated, or ``None``."""
+        return self._server_protocol_version
+
+    @property
+    def server_info(self) -> dict[str, Any]:
+        """The downstream's ``serverInfo`` (name, version) from initialize."""
+        return dict(self._server_info)
+
+    # -- Callbacks ------------------------------------------------------------
 
     def set_crash_callback(self, callback: CrashCallback) -> None:
         """Register an async callback invoked when the subprocess crashes.
@@ -123,6 +166,30 @@ class StdioTransport:
         :meth:`stop`, which cancels the monitor task) without deadlock.
         """
         self._on_crash = callback
+
+    def set_notification_callback(self, callback: NotificationCallback) -> None:
+        """Register an async callback for server-originated notifications.
+
+        The callback receives ``(server_name, method, params)`` whenever the
+        downstream server sends a JSON-RPC notification (no ``id``), e.g.
+        ``notifications/resources/updated`` or ``notifications/*/list_changed``.
+        It is invoked in a separate task so a slow handler cannot block the
+        transport's stdout reader.
+        """
+        self._on_notification = callback
+
+    def set_request_callback(self, callback: RequestCallback) -> None:
+        """Register an async callback for server-originated requests.
+
+        The callback receives ``(server_name, request_id, method, params)``
+        whenever the downstream sends a JSON-RPC request (a message with both
+        an ``id`` and a ``method``), e.g. ``sampling/createMessage``.  The
+        callback must eventually call :meth:`send_response` or
+        :meth:`send_error_response` with the same ``request_id``.  It is run in
+        a separate task so relaying to the upstream client cannot block the
+        transport's stdout reader.
+        """
+        self._on_request = callback
 
     # -- Lifecycle ------------------------------------------------------------
 
@@ -260,7 +327,10 @@ class StdioTransport:
         """Perform the MCP ``initialize`` handshake.
 
         Sends the ``initialize`` request, then the ``notifications/initialized``
-        notification to complete the handshake.
+        notification to complete the handshake.  The gateway advertises the
+        client capabilities it can honor on behalf of the upstream client
+        (``sampling``, ``elicitation``, ``roots``) so downstreams know these
+        server→client requests may be relayed.
 
         Returns:
             The ``initialize`` result dict (contains ``protocolVersion``,
@@ -278,7 +348,15 @@ class StdioTransport:
             "initialize",
             {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
+                # The gateway can relay these server→client requests to the
+                # upstream client (subject to the client actually advertising
+                # them).  Advertising them here lets downstreams attempt the
+                # requests; the gateway still gates on the real client caps.
+                "capabilities": {
+                    "sampling": {},
+                    "elicitation": {},
+                    "roots": {"listChanged": True},
+                },
                 "clientInfo": CLIENT_INFO,
             },
         )
@@ -287,6 +365,10 @@ class StdioTransport:
 
         self._initialized = True
         server_info = result.get("serverInfo", {})
+        # Retain negotiation results for the capability registry.
+        self._server_capabilities = result.get("capabilities", {}) or {}
+        self._server_protocol_version = result.get("protocolVersion")
+        self._server_info = server_info or {}
         logger.info(
             "Initialized MCP server",
             extra={
@@ -298,6 +380,19 @@ class StdioTransport:
         return result
 
     # -- JSON-RPC send --------------------------------------------------------
+
+    async def _write_message(self, message: dict[str, Any]) -> None:
+        """Serialize and write a single JSON-RPC message to the subprocess.
+
+        Serialized writes are serialized through a lock so concurrent writers
+        (request sends and server-request responses) cannot interleave lines.
+        """
+        if self.process is None or self.process.stdin is None:
+            raise StdioTransportError(f"Transport '{self.name}' is not started")
+        line = json.dumps(message) + "\n"
+        async with self._write_lock:
+            self.process.stdin.write(line.encode("utf-8"))
+            await self.process.stdin.drain()
 
     async def send_request(
         self,
@@ -336,13 +431,11 @@ class StdioTransport:
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[request_id] = future
 
-        line = json.dumps(message) + "\n"
         logger.debug(
             "→ request",
             extra={"server": self.name, "method": method, "id": request_id},
         )
-        self.process.stdin.write(line.encode("utf-8"))
-        await self.process.stdin.drain()
+        await self._write_message(message)
 
         effective_timeout = timeout if timeout is not None else self.timeout
         try:
@@ -368,9 +461,6 @@ class StdioTransport:
             method: The JSON-RPC method name.
             params: Optional params dict.
         """
-        if self.process is None or self.process.stdin is None:
-            raise StdioTransportError(f"Transport '{self.name}' is not started")
-
         message: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
@@ -378,12 +468,37 @@ class StdioTransport:
         if params is not None:
             message["params"] = params
 
-        line = json.dumps(message) + "\n"
-        self.process.stdin.write(line.encode("utf-8"))
-        await self.process.stdin.drain()
+        await self._write_message(message)
         logger.debug(
             "→ notification",
             extra={"server": self.name, "method": method},
+        )
+
+    async def send_response(self, request_id: int | str, result: dict[str, Any]) -> None:
+        """Send a JSON-RPC response to a server-originated request.
+
+        Used by the gateway to answer a downstream ``sampling/createMessage``,
+        ``elicitation/create``, or ``roots/list`` request after relaying it to
+        the upstream client.
+        """
+        await self._write_message({"jsonrpc": "2.0", "id": request_id, "result": result})
+        logger.debug(
+            "→ response (to server request)",
+            extra={"server": self.name, "id": request_id},
+        )
+
+    async def send_error_response(self, request_id: int | str, code: int, message: str) -> None:
+        """Send a JSON-RPC error response to a server-originated request."""
+        await self._write_message(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": code, "message": message},
+            }
+        )
+        logger.debug(
+            "→ error response (to server request)",
+            extra={"server": self.name, "id": request_id, "code": code},
         )
 
     # -- Convenience MCP methods ----------------------------------------------
@@ -414,7 +529,16 @@ class StdioTransport:
     # -- Background tasks -----------------------------------------------------
 
     async def _read_stdout(self) -> None:
-        """Background task: read stdout, dispatch responses to waiting futures."""
+        """Background task: read stdout and dispatch each message.
+
+        Three message shapes arrive from the downstream:
+
+        - **response** (``id`` present, no ``method``) → resolve the pending
+          request future;
+        - **server-originated request** (``id`` *and* ``method``) → surface to
+          the request callback so the gateway can relay to the upstream client;
+        - **notification** (no ``id``) → surface to the notification callback.
+        """
         assert self.process is not None
         assert self.process.stdout is not None
 
@@ -437,6 +561,29 @@ class StdioTransport:
                 continue
 
             msg_id = message.get("id")
+            method = message.get("method")
+
+            if msg_id is not None and method is not None:
+                # Server-originated request (has both id and method).
+                params = message.get("params", {}) or {}
+                logger.debug(
+                    "← request (server-originated)",
+                    extra={"server": self.name, "method": method, "id": msg_id},
+                )
+                if self._on_request is not None:
+                    asyncio.create_task(
+                        self._run_request_callback(msg_id, method, params),
+                        name=f"srvreq-{self.name}-{method}",
+                    )
+                else:
+                    # No handler — reject so the downstream isn't left hanging.
+                    asyncio.create_task(
+                        self.send_error_response(
+                            msg_id, -32601, f"Gateway cannot handle request: {method}"
+                        ),
+                        name=f"srvreq-reject-{self.name}",
+                    )
+                continue
 
             if msg_id is not None:
                 # This is a response to a pending request.
@@ -476,12 +623,20 @@ class StdioTransport:
                     if not future.done():
                         future.set_result(result)
             else:
-                # This is a notification from the server.
-                method = message.get("method", "unknown")
+                # This is a server-originated notification.  Surface it to the
+                # gateway (if a callback is registered) in a separate task so a
+                # slow handler cannot block the stdout reader.
+                notif_method = message.get("method", "unknown")
+                params = message.get("params", {}) or {}
                 logger.debug(
                     "← notification",
-                    extra={"server": self.name, "method": method},
+                    extra={"server": self.name, "method": notif_method},
                 )
+                if self._on_notification is not None:
+                    asyncio.create_task(
+                        self._run_notification_callback(notif_method, params),
+                        name=f"notif-{self.name}-{notif_method}",
+                    )
 
         # stdout closed — reject any still-pending requests.  The monitor
         # task will set the crashed flag if this wasn't an intentional stop.
@@ -560,6 +715,40 @@ class StdioTransport:
                 "Crash callback failed",
                 extra={"server": name, "returncode": returncode},
             )
+
+    async def _run_notification_callback(self, method: str, params: dict[str, Any]) -> None:
+        """Run the notification callback, catching and logging any exceptions."""
+        if self._on_notification is None:
+            return
+        try:
+            await self._on_notification(self.name, method, params)
+        except Exception:
+            logger.exception(
+                "Notification callback failed",
+                extra={"server": self.name, "method": method},
+            )
+
+    async def _run_request_callback(
+        self, request_id: int | str, method: str, params: dict[str, Any]
+    ) -> None:
+        """Run the server-request callback, answering with an error on failure.
+
+        If the callback raises, a JSON-RPC error response is sent back to the
+        downstream so it is never left waiting for a reply.
+        """
+        if self._on_request is None:
+            return
+        try:
+            await self._on_request(self.name, request_id, method, params)
+        except Exception as exc:
+            logger.exception(
+                "Request callback failed",
+                extra={"server": self.name, "method": method},
+            )
+            try:
+                await self.send_error_response(request_id, -32603, f"Gateway error: {exc}")
+            except StdioTransportError:
+                pass
 
     # -- Helpers --------------------------------------------------------------
 

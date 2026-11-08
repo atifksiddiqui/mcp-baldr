@@ -274,12 +274,19 @@ class TestCurriculum:
                 assert lesson.explanation(level), f"{lesson.lesson_id} missing {level}"
 
     def test_capability_status_is_honest(self):
-        # Implemented capabilities.
+        # Fully implemented capabilities (Stages 1-6).
         assert capability_status("tools/call") is SupportStatus.IMPLEMENTED
         assert capability_status("initialize") is SupportStatus.IMPLEMENTED
-        # Not-implemented capabilities must never be mislabeled.
-        assert capability_status("resources/read") is SupportStatus.NOT_IMPLEMENTED
-        assert capability_status("sampling/createMessage") is SupportStatus.NOT_IMPLEMENTED
+        assert capability_status("resources/read") is SupportStatus.IMPLEMENTED
+        assert capability_status("prompts/get") is SupportStatus.IMPLEMENTED
+        assert capability_status("completion/complete") is SupportStatus.IMPLEMENTED
+        assert capability_status("logging/setLevel") is SupportStatus.IMPLEMENTED
+        assert capability_status("ping") is SupportStatus.IMPLEMENTED
+        # Server→client requests are RELAYED, not provided: honestly PARTIAL,
+        # never claimed as fully implemented (the gateway is a conduit).
+        assert capability_status("sampling/createMessage") is SupportStatus.PARTIAL
+        assert capability_status("elicitation/create") is SupportStatus.PARTIAL
+        assert capability_status("roots/list") is SupportStatus.PARTIAL
         # Unknown methods default to not-implemented (never overclaim).
         assert capability_status("made/up") is SupportStatus.NOT_IMPLEMENTED
 
@@ -370,7 +377,10 @@ class TestLearnCLI:
         assert self._run(["capabilities"]) == 0
         out = capsys.readouterr().out
         assert "tools/call" in out
-        assert "not implemented" in out
+        # The matrix shows real statuses; relayed server→client requests are
+        # honestly labeled "partial", fully-served methods "implemented".
+        assert "implemented" in out
+        assert "partial" in out
 
     def test_lesson_command(self, capsys):
         assert self._run(["lesson", "fundamentals.what-is-mcp", "--level", "advanced"]) == 0

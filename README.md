@@ -1,18 +1,40 @@
 # Baldr MCP Gateway (mcp-baldr)
 
-A modular reverse proxy for Model Context Protocol (MCP) servers. The gateway spawns downstream `stdio` MCP server subprocesses, aggregates their tools under namespaced names, and exposes a unified MCP server interface to AI clients.
+A modular reverse proxy for Model Context Protocol (MCP) servers. The gateway spawns downstream `stdio` MCP server subprocesses, aggregates their full capability surface — tools, resources, prompts, completion, logging, subscriptions — under namespaced identifiers, and exposes a single unified MCP server interface to AI clients. It also relays server→client requests (sampling, elicitation, roots) to the upstream client.
 
 ## Features
 
-- **Multi-server aggregation** — combine many MCP servers behind a single endpoint
-- **Automatic namespacing** — tool collisions resolved via `server__tool` prefixing
+- **Full-protocol aggregation** — tools, resources, prompts, completion, and logging combined behind one endpoint
+- **Honest capability negotiation** — the gateway advertises only what healthy downstreams support *and* what it can actually proxy; it never overclaims
+- **Automatic namespacing** — tool/prompt collisions resolved via `server__name` prefixing; resources via a reversible, collision-safe `baldr+<server>://` URI scheme
+- **Notifications & subscriptions** — `list_changed` refresh+forward, resource-update subscriptions with per-URI dedup, log-message forwarding with secret redaction
+- **Server→client relaying** — sampling / elicitation / roots requests are forwarded to the client **only if the client advertised the capability**; the gateway never auto-approves
+- **Opaque, stable pagination** — aggregated `*/list` results are paginated with a tamper-evident cursor that stays correct as downstreams come and go
 - **YAML + Pydantic config** — validated configuration that fails fast on errors
-- **Crash detection & auto-restart** — monitor subprocess health, restart on crash
+- **Crash detection & auto-restart** — monitor subprocess health, restart on crash, clean up subscriptions
 - **Clean shutdown** — SIGINT/SIGTERM handled gracefully, no orphaned processes
 - **Configurable timeouts** — per-server request timeouts with per-request overrides
 - **Structured JSON logging** — all requests and responses logged for observability
 - **Pure stdio transport** — no HTTP dependency, works with any MCP host
 - **Educational inspection** — optional stderr protocol traces for learning and debugging (see [docs/LEARNING.md](docs/LEARNING.md))
+
+## MCP capability support
+
+The gateway proxies the capabilities below. "Relayed" means the gateway is a conduit, not a provider — it forwards the request to the upstream client and relays the answer back, gated on the client's advertised capability.
+
+| Capability | Methods | Status |
+|------------|---------|--------|
+| Initialization | `initialize`, `notifications/initialized` | Aggregated / negotiated |
+| Tools | `tools/list`, `tools/call` | Aggregated + namespaced + routed |
+| Resources | `resources/list`, `resources/read`, `resources/templates/list` | Aggregated with reversible namespaced URIs |
+| Subscriptions | `resources/subscribe`, `resources/unsubscribe`, `notifications/resources/updated` | Deduplicated, translated, cleaned up on crash |
+| Prompts | `prompts/list`, `prompts/get` | Aggregated + namespaced + routed |
+| Completion | `completion/complete` | Routed (prompt-ref and resource-ref) |
+| Logging | `logging/setLevel`, `notifications/message` | Fan-out to downstreams; forwarded logs are redacted |
+| List changes | `notifications/tools|resources|prompts/list_changed` | Refresh registry + forward upstream |
+| Ping | `ping` | Answered directly |
+| Sampling / Elicitation / Roots | `sampling/createMessage`, `elicitation/create`, `roots/list` | **Relayed** to the client (capability-gated, never auto-approved) |
+| Progress / Cancellation | `notifications/progress`, `notifications/cancelled` | Forwarded verbatim |
 
 ## Prerequisites
 
@@ -76,26 +98,30 @@ The gateway exits cleanly on EOF, SIGINT, or SIGTERM. See the [Configuration](#c
 ┌──────────────────────────────────────────────────┐
 │                Baldr MCP Gateway                   │
 │                                                    │
-│  Config Loader ── Pydantic + YAML validation       │
-│  ToolRegistry  ── namespaced tool aggregation     │
-│  Routing       ── resolve("srv_a__echo")          │
-│                    → ("srv_a", "echo")             │
-│  Transports    ── StdioTransport per server        │
-│  Monitoring    ── crash detection + auto-restart   │
-│  Server Loop   ── MCP server on own stdin/stdout   │
-│  Signal Handle ── SIGINT/SIGTERM → clean shutdown  │
+│  Config Loader   ── Pydantic + YAML validation     │
+│  CapabilityReg.  ── honest upstream aggregate       │
+│  Registries      ── tools / resources / prompts     │
+│  RequestRouter   ── method → handler dispatch       │
+│  Routing         ── resolve("srv_a__echo")          │
+│                     → ("srv_a", "echo")             │
+│  Subscriptions   ── resource-update tracking        │
+│  Client relay    ── sampling/elicitation/roots      │
+│  Transports      ── StdioTransport per server       │
+│  Monitoring      ── crash detection + auto-restart  │
+│  Server Loop     ── MCP server on own stdin/stdout  │
+│  Signal Handle   ── SIGINT/SIGTERM → clean shutdown │
 └──────┬──────────────────────┬──────────────────────┘
        │ stdin/stdout         │ stdin/stdout
        ▼                      ▼
    ┌───────────┐          ┌───────────┐
    │  Server A │          │  Server B │
-   │           │          │           │
-   │ echo      │          │ greet     │
-   │ add       │          │ multiply  │
+   │ tools     │          │ tools     │
+   │ resources │          │ prompts   │
+   │ prompts   │          │ resources │
    └───────────┘          └───────────┘
 ```
 
-The gateway is itself an MCP server. AI clients connect to the gateway's stdin/stdout. The gateway forwards requests to the correct downstream subprocess based on the namespace prefix in tool names (`server__tool`).
+The gateway is itself an MCP server. AI clients connect to the gateway's stdin/stdout. The gateway forwards requests to the correct downstream subprocess based on the namespace prefix in tool/prompt names (`server__name`) or the namespaced resource URI scheme (`baldr+<server>://`).
 
 ## Configuration
 
@@ -119,6 +145,9 @@ servers:
 logging:
   level: INFO
   format: json
+
+pagination:
+  page_size: 100
 ```
 
 This config creates two downstream servers. Tools are namespaced as:
@@ -139,6 +168,8 @@ Each server entry supports:
 | `timeout` | `30` | Seconds to wait for a response before timing out |
 | `auto_restart` | `false` | Restart the server if it crashes unexpectedly |
 | `max_restarts` | `3` | Maximum restart attempts before giving up |
+
+Top-level `pagination.page_size` (default 100) bounds how many items each aggregated `tools/list` / `resources/list` / `prompts/list` page returns.
 
 Real-world example with resiliency enabled:
 
@@ -224,7 +255,20 @@ When a client calls `tools/call` with a namespaced name like `mock_a__echo`:
 4. It forwards `tools/call` with the original name `echo` (not the namespaced one)
 5. The result is passed back to the client
 
+Prompts route the same way (`server__prompt`). Resources use a reversible URI scheme — `resources/read` on `baldr+mock_a://<encoded>` is decoded back to `("mock_a", "<original uri>")` and the original URI is forwarded downstream.
+
 If the tool doesn't exist in the registry, the gateway returns a JSON-RPC error. If the owning server is down, the gateway returns an internal error.
+
+## Server→Client Requests
+
+Some MCP interactions flow the other way: a downstream server asks the *client* to do something (sample from the model, elicit input, list roots). The gateway relays these faithfully and safely:
+
+1. A downstream sends e.g. `sampling/createMessage` to the gateway.
+2. The gateway checks whether the **upstream client** advertised the matching capability (`sampling`) in its `initialize` call.
+3. If not, the gateway returns a method-not-found error to the downstream — it **never** auto-approves or fabricates a result.
+4. If so, the gateway forwards the request to the client, waits for the client's answer, and relays that answer (or error) back to the downstream.
+
+The gateway is strictly a conduit for these requests: it does not generate samples, approve elicitations, or invent roots.
 
 ## Resiliency
 
@@ -241,10 +285,11 @@ Each downstream subprocess is watched by a background monitor task. When a subpr
 If `auto_restart: true` is set, the crash callback:
 1. Increments the restart counter for that server
 2. Calls `transport.restart()` (stop + start + initialize)
-3. Re-discovers tools and re-registers them in the registry
-4. The gateway is ready to route calls again
+3. Re-discovers tools/resources/prompts and re-registers them
+4. Drops stale subscriptions so the client can re-subscribe
+5. The gateway is ready to route calls again
 
-If the restart count exceeds `max_restarts`, or if `auto_restart` is false, the server's tools are removed from the registry and the gateway returns errors for calls to that server.
+If the restart count exceeds `max_restarts`, or if `auto_restart` is false, the server's items are removed from the registries and the gateway returns errors for calls to that server.
 
 ### Clean Shutdown
 
@@ -292,17 +337,26 @@ python -m pytest tests/ -v
 ruff check mcp_baldr/ tests/ examples/ scripts/
 ```
 
-104 tests across 7 files:
+262 tests across 16 files. Core transport/registry/resiliency coverage plus a test suite per protocol capability and a full end-to-end integration walk:
 
-| File | Tests | Covers |
-|------|-------|--------|
-| `test_config_loader.py` | 23 | Config validation, YAML loading, edge cases |
-| `test_stdio_transport.py` | 20 | Transport lifecycle, MCP handshake, tool ops, errors |
-| `test_end_to_end.py` | 3 | Single-server config → transport → mock server |
-| `test_registry.py` | 18 | Namespace registration, collision handling, routing resolution, client format, unregister, introspection |
-| `test_multi_server.py` | 14 | Multi-server routing, cross-route rejection, gateway server loop via subprocess |
-| `test_resiliency.py` | 14 | Crash detection, crash callback, transport restart, auto-restart recovery, max restarts, no-restart tool removal, SIGINT/SIGTERM clean exit, config/per-request timeouts |
-| `test_edge_cases.py` | 12 | Concurrent tool calls, malformed JSON-RPC input, unknown methods, empty lines, registry stress (20 servers), logging utilities |
+| File | Covers |
+|------|--------|
+| `test_config_loader.py` | Config validation, YAML loading, pagination settings, edge cases |
+| `test_stdio_transport.py` | Transport lifecycle, MCP handshake, tool ops, errors |
+| `test_end_to_end.py` | Single-server config → transport → mock server |
+| `test_registry.py` | Namespace registration, collision handling, routing resolution, client format |
+| `test_multi_server.py` | Multi-server routing, cross-route rejection, gateway loop via subprocess |
+| `test_resiliency.py` | Crash detection, auto-restart, max restarts, SIGINT/SIGTERM, timeouts |
+| `test_edge_cases.py` | Concurrent calls, malformed input, unknown methods, registry stress |
+| `test_capability_registry.py` | Capability negotiation + honest upstream aggregate |
+| `test_router.py` | Unified request-router dispatch |
+| `test_resources.py` | Resource aggregation, namespaced URIs, read routing, templates |
+| `test_prompts.py` | Prompt aggregation + routing |
+| `test_subscriptions.py` | Resource subscriptions, dedup, live update forwarding |
+| `test_completion_logging.py` | Completion routing, logging fan-out, redacted log forwarding |
+| `test_server_requests.py` | ping, sampling/elicitation/roots relay (capability-gated), progress/cancel |
+| `test_pagination.py` | Opaque stable cursors, cross-downstream paginated walks |
+| `test_integration.py` | Full-protocol end-to-end walk through two live downstreams |
 
 ## Project Structure
 
@@ -313,30 +367,34 @@ mcp-gw/
 │       └── ci.yml             # GitHub Actions: lint + test on push/PR
 ├── mcp_baldr/
 │   ├── config/
-│   │   ├── models.py          # Pydantic config models (with resiliency + learning fields)
+│   │   ├── models.py          # Pydantic config (servers, logging, learning, pagination)
 │   │   └── loader.py          # YAML parser + validation
+│   ├── protocol/
+│   │   ├── uri.py             # Reversible namespaced resource URIs
+│   │   └── pagination.py      # Opaque, stable cursor pagination
 │   ├── transports/
 │   │   └── stdio.py           # StdioTransport: subprocess bridge + crash monitoring
+│   ├── routing/
+│   │   └── router.py          # RequestRouter: method → handler dispatch
 │   ├── registry/
-│   │   └── tool_registry.py   # Multi-server registry with namespace routing
+│   │   ├── base_registry.py   # Generic namespaced-registry mechanics
+│   │   ├── tool_registry.py   # Tool aggregation
+│   │   ├── resource_registry.py  # Resource + template aggregation
+│   │   ├── prompt_registry.py    # Prompt aggregation
+│   │   └── capability_registry.py # Downstream caps + honest upstream aggregate
 │   ├── gateway/
-│   │   └── server.py          # Gateway: MCP server loop + routing + crash handling
+│   │   ├── server.py          # Gateway: MCP server loop + routing + relaying
+│   │   └── subscription_manager.py # Resource-subscription tracking
 │   ├── educational/
 │   │   └── inspector.py       # ProtocolInspector: educational stderr traces
+│   ├── learning/              # Learning Lab: events, curriculum, redaction, progress
 │   └── logging_utils.py       # Structured JSON logging
 ├── examples/
-│   ├── mock_server.py               # Mock MCP server (default + alt + enhanced tool sets)
+│   ├── mock_server.py               # Tools-only mock MCP server
+│   ├── full_mock_server.py          # Capability-complete mock (all protocol surfaces)
 │   ├── slow_server.py               # Slow MCP server for timeout testing
 │   └── learning_network_config.yaml  # Local + live search config
-├── tests/
-│   ├── conftest.py            # Shared fixtures (paths, config helpers)
-│   ├── test_config_loader.py
-│   ├── test_stdio_transport.py
-│   ├── test_end_to_end.py
-│   ├── test_registry.py
-│   ├── test_multi_server.py
-│   ├── test_resiliency.py
-│   └── test_edge_cases.py
+├── tests/                      # 16 test files (see Testing section)
 ├── scripts/
 │   ├── quick_e2e.py            # Single-server verification
 │   ├── verify_multi_server.py  # Multi-server routing verification
@@ -388,7 +446,7 @@ mcp-gw/
 - [x] Full test coverage for crash recovery, restart, signal handling, and timeouts
 
 ### Phase 4: Testing & Example Sandbox
-- [x] 104 tests across 7 files (config, transport, registry, multi-server, resiliency, edge cases)
+- [x] Tests across config, transport, registry, multi-server, resiliency, edge cases
 - [x] Shared test fixtures in `conftest.py`
 - [x] Example client script demonstrating real gateway usage
 - [x] Dockerfile for containerized deployment
@@ -410,9 +468,21 @@ mcp-gw/
 - [x] Packet journey visualization on stderr
 - [x] Graceful error handling for missing npx, invalid keys, or network failures
 
+### Phase 7: Full MCP Protocol Support
+- [x] Capability negotiation + honest upstream capability aggregate (`CapabilityRegistry`)
+- [x] Unified request router replacing the ad-hoc method ladder
+- [x] Resource aggregation with reversible, collision-safe namespaced URIs
+- [x] Prompt aggregation (`server__prompt` namespacing)
+- [x] Notifications + resource subscriptions (dedup, translation, crash cleanup)
+- [x] Completion routing (prompt-ref + resource-ref) and logging fan-out with redaction
+- [x] Server→client relaying (sampling/elicitation/roots), capability-gated, never auto-approved
+- [x] ping, progress/cancellation passthrough
+- [x] Opaque, stable cursor pagination across downstreams
+- [x] Full-protocol integration test + honest capability matrix in the Learning Lab
+
 ### Roadmap
 
-- **Future**: Resource proxying, prompt aggregation, SSE transport, persistence layer
+- **Future**: SSE / streamable-HTTP transport, persistence layer, interactive architecture explorer
 
 ## License
 

@@ -73,6 +73,24 @@ class LearningConfig(BaseModel):
     )
 
 
+class PaginationConfig(BaseModel):
+    """Pagination settings for aggregated ``*/list`` results.
+
+    The gateway paginates the *aggregate* of all downstream items with an
+    opaque, stable cursor.  ``page_size`` bounds how many items each
+    ``tools/list`` / ``resources/list`` / ``prompts/list`` page returns.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_size: int = Field(
+        default=100,
+        gt=0,
+        le=10_000,
+        description="Maximum items per page for aggregated list results.",
+    )
+
+
 class StdioServerConfig(BaseModel):
     """Configuration for a single downstream stdio MCP server subprocess.
 
@@ -150,6 +168,10 @@ class GatewayConfig(BaseModel):
     learning: LearningConfig = Field(
         default_factory=LearningConfig,
         description="Educational protocol inspection configuration.",
+    )
+    pagination: PaginationConfig = Field(
+        default_factory=PaginationConfig,
+        description="Pagination settings for aggregated list results.",
     )
 
     @model_validator(mode="after")

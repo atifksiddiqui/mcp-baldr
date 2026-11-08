@@ -181,3 +181,38 @@ class TestLoadConfig:
 
         with pytest.raises(ConfigError, match="Invalid configuration"):
             load_config(path)
+
+
+# -- PaginationConfig (Stage 8) ----------------------------------------------
+
+
+class TestPaginationConfig:
+    def test_default_page_size(self):
+        assert GatewayConfig().pagination.page_size == 100
+
+    def test_custom_page_size(self):
+        cfg = GatewayConfig.model_validate({"pagination": {"page_size": 25}})
+        assert cfg.pagination.page_size == 25
+
+    @pytest.mark.parametrize("bad", [0, -1, 10_001, 999_999])
+    def test_invalid_page_size_rejected(self, bad):
+        with pytest.raises(Exception, match="page_size"):
+            GatewayConfig.model_validate({"pagination": {"page_size": bad}})
+
+    def test_extra_pagination_key_rejected(self):
+        with pytest.raises(Exception, match="extra"):
+            GatewayConfig.model_validate({"pagination": {"bogus": 1}})
+
+    def test_pagination_loaded_from_yaml(self, tmp_path: Path):
+        path = tmp_path / "gateway_config.yaml"
+        path.write_text(
+            textwrap.dedent(
+                """\
+                servers: []
+                pagination:
+                  page_size: 7
+                """
+            )
+        )
+        cfg = load_config(path)
+        assert cfg.pagination.page_size == 7

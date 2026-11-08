@@ -196,24 +196,38 @@ _FUNDAMENTALS = Module(
 
 CAPABILITY_SUPPORT: dict[str, SupportStatus] = {
     "initialize": SupportStatus.IMPLEMENTED,
+    "ping": SupportStatus.IMPLEMENTED,
+    # Tools (Phase 1 / Stage 2): aggregated + namespaced + routed.
     "tools/list": SupportStatus.IMPLEMENTED,
     "tools/call": SupportStatus.IMPLEMENTED,
     "notifications/initialized": SupportStatus.IMPLEMENTED,
-    # Observed/forwarded but not natively served by the gateway:
+    # Resources (Stage 3) + subscriptions (Stage 5): aggregated with reversible
+    # namespaced URIs, read routed to the owning server, subscribe/unsubscribe
+    # deduplicated and cleaned up on crash.
+    "resources/list": SupportStatus.IMPLEMENTED,
+    "resources/read": SupportStatus.IMPLEMENTED,
+    "resources/templates/list": SupportStatus.IMPLEMENTED,
+    "resources/subscribe": SupportStatus.IMPLEMENTED,
+    "resources/unsubscribe": SupportStatus.IMPLEMENTED,
+    # Prompts (Stage 4): aggregated + namespaced + routed.
+    "prompts/list": SupportStatus.IMPLEMENTED,
+    "prompts/get": SupportStatus.IMPLEMENTED,
+    # Completion + logging (Stage 6).
+    "completion/complete": SupportStatus.IMPLEMENTED,
+    "logging/setLevel": SupportStatus.IMPLEMENTED,
+    # Server→client requests (Stage 7): the gateway does not *provide* these;
+    # it RELAYS them to the upstream client, gated on the client's advertised
+    # capability, and never auto-approves.  Marked PARTIAL to reflect that the
+    # gateway is a conduit, not a sampling/elicitation/roots provider.
+    "sampling/createMessage": SupportStatus.PARTIAL,
+    "elicitation/create": SupportStatus.PARTIAL,
+    "roots/list": SupportStatus.PARTIAL,
+    # Notifications: tools/resources/prompts list_changed refresh+forward,
+    # resources/updated translate+forward (if subscribed), message redact+
+    # forward, progress/cancelled verbatim passthrough.  PARTIAL because
+    # notifications the gateway does not recognize are intentionally dropped
+    # rather than blindly forwarded.
     "notifications/*": SupportStatus.PARTIAL,
-    # Not implemented yet — clearly labeled so lessons don't overclaim:
-    "resources/list": SupportStatus.NOT_IMPLEMENTED,
-    "resources/read": SupportStatus.NOT_IMPLEMENTED,
-    "resources/templates/list": SupportStatus.NOT_IMPLEMENTED,
-    "resources/subscribe": SupportStatus.NOT_IMPLEMENTED,
-    "resources/unsubscribe": SupportStatus.NOT_IMPLEMENTED,
-    "prompts/list": SupportStatus.NOT_IMPLEMENTED,
-    "prompts/get": SupportStatus.NOT_IMPLEMENTED,
-    "completion/complete": SupportStatus.NOT_IMPLEMENTED,
-    "logging/setLevel": SupportStatus.NOT_IMPLEMENTED,
-    "sampling/createMessage": SupportStatus.NOT_IMPLEMENTED,
-    "elicitation/create": SupportStatus.NOT_IMPLEMENTED,
-    "ping": SupportStatus.NOT_IMPLEMENTED,
 }
 
 

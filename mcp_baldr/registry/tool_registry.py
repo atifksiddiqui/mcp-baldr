@@ -8,6 +8,10 @@ Routing a client call back to the correct subprocess is a simple registry
 lookup: each :class:`RegisteredTool` stores its owning server name and
 original (un-namespaced) tool name, so there is no need to split strings
 at request time.
+
+The generic namespacing/resolve/refresh mechanics live in
+:class:`~mcp_baldr.registry.base_registry.NamespacedRegistry`; this module
+specializes them for tools (JSON-Schema input, client rendering).
 """
 
 from __future__ import annotations
@@ -16,10 +20,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from mcp_baldr.registry.base_registry import NAMESPACE_SEP, NamespacedRegistry
+
 logger = logging.getLogger(__name__)
 
-#: Separator between the server namespace prefix and the original tool name.
-NAMESPACE_SEP = "__"
+__all__ = ["NAMESPACE_SEP", "RegisteredTool", "ToolRegistry"]
 
 
 @dataclass
@@ -66,25 +71,38 @@ class RegisteredTool:
         return tool_dict
 
 
-class ToolRegistry:
+class ToolRegistry(NamespacedRegistry[RegisteredTool]):
     """Stores tools discovered from multiple downstream servers.
 
     Tools are keyed by their namespaced name (``server__tool``) to avoid
     collisions when multiple servers define a tool with the same local name.
     """
 
-    def __init__(self) -> None:
-        self._tools: dict[str, RegisteredTool] = {}
-        # Track which server names have tools registered, for quick
-        # bulk removal and diagnostics.
-        self._server_names: set[str] = set()
+    # -- NamespacedRegistry hooks ---------------------------------------------
 
-    # -- Registration ---------------------------------------------------------
+    def _make_item(self, server_name: str, raw: dict) -> RegisteredTool:
+        return RegisteredTool(
+            name=raw.get("name", ""),
+            server=server_name,
+            description=raw.get("description"),
+            input_schema=raw.get("inputSchema", {}),
+            raw=raw,
+        )
+
+    def _namespaced_id(self, item: RegisteredTool) -> str:
+        return item.namespaced_name
+
+    def _server_of(self, item: RegisteredTool) -> str:
+        return item.server
+
+    def _original_id(self, item: RegisteredTool) -> str:
+        return item.name
+
+    # -- Tool-specific public API (preserved for backward compatibility) ------
 
     def add(self, tool: RegisteredTool) -> None:
         """Register or replace a single tool."""
-        self._tools[tool.namespaced_name] = tool
-        self._server_names.add(tool.server)
+        super().add(tool)
         logger.info(
             "Registered tool",
             extra={
@@ -102,77 +120,8 @@ class ToolRegistry:
         Existing tools from the same server are replaced (not merged), so
         calling this again after a server's tool list changes performs a
         clean refresh.
-
-        Args:
-            server_name: The downstream server's name (namespace prefix).
-            tools: The ``tools`` array from that server's ``tools/list``
-                response.
-
-        Returns:
-            The list of :class:`RegisteredTool` objects that were created.
         """
-        # Remove any previously-registered tools for this server first,
-        # so a re-discovery doesn't leave stale entries.
-        self.unregister_server(server_name)
-
-        registered: list[RegisteredTool] = []
-        for tool_def in tools:
-            tool = RegisteredTool(
-                name=tool_def.get("name", ""),
-                server=server_name,
-                description=tool_def.get("description"),
-                input_schema=tool_def.get("inputSchema", {}),
-                raw=tool_def,
-            )
-            self.add(tool)
-            registered.append(tool)
-
-        logger.info(
-            "Registered tools from server",
-            extra={
-                "server": server_name,
-                "tool_count": len(registered),
-                "tools": [t.namespaced_name for t in registered],
-            },
-        )
-        return registered
-
-    def unregister_server(self, server_name: str) -> int:
-        """Remove all tools belonging to a server.
-
-        Returns:
-            The number of tools that were removed.
-        """
-        to_remove = [ns_name for ns_name, tool in self._tools.items() if tool.server == server_name]
-        for ns_name in to_remove:
-            del self._tools[ns_name]
-        if to_remove:
-            logger.info(
-                "Unregistered server tools",
-                extra={"server": server_name, "removed": len(to_remove)},
-            )
-        # Only drop the server from the tracked set if no tools remain.
-        if not any(t.server == server_name for t in self._tools.values()):
-            self._server_names.discard(server_name)
-        return len(to_remove)
-
-    # -- Lookup & routing ----------------------------------------------------
-
-    def get(self, namespaced_name: str) -> RegisteredTool | None:
-        """Look up a tool by its namespaced name."""
-        return self._tools.get(namespaced_name)
-
-    def resolve(self, namespaced_name: str) -> tuple[str, str] | None:
-        """Resolve a namespaced tool name for routing.
-
-        Returns:
-            A ``(server_name, original_tool_name)`` tuple, or ``None`` if
-            the tool is not registered.
-        """
-        tool = self._tools.get(namespaced_name)
-        if tool is None:
-            return None
-        return tool.server, tool.name
+        return self.register_server_items(server_name, tools)
 
     def list_for_client(self) -> list[dict[str, Any]]:
         """Return all tools in the format expected by MCP ``tools/list``.
@@ -180,29 +129,12 @@ class ToolRegistry:
         Each tool's ``name`` is namespaced; descriptions and schemas are
         passed through from the downstream server.
         """
-        return [tool.to_client_dict() for tool in self._tools.values()]
-
-    # -- Introspection -------------------------------------------------------
+        return [tool.to_client_dict() for tool in self.all_items()]
 
     def all_tools(self) -> list[RegisteredTool]:
         """Return all registered tools as :class:`RegisteredTool` objects."""
-        return list(self._tools.values())
+        return self.all_items()
 
     def tools_for_server(self, server_name: str) -> list[RegisteredTool]:
         """Return all tools registered for a specific server."""
-        return [t for t in self._tools.values() if t.server == server_name]
-
-    def servers(self) -> set[str]:
-        """Return the set of server names that currently have tools registered."""
-        return set(self._server_names)
-
-    def clear(self) -> None:
-        """Remove all registered tools."""
-        self._tools.clear()
-        self._server_names.clear()
-
-    def __len__(self) -> int:
-        return len(self._tools)
-
-    def __contains__(self, namespaced_name: str) -> bool:
-        return namespaced_name in self._tools
+        return self.items_for_server(server_name)

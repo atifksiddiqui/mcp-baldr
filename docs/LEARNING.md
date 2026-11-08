@@ -199,11 +199,16 @@ payloads.
 
 ### Honest capability labeling
 
-The curriculum never overclaims. The capability-support matrix marks only what
-Baldr actually implements (`initialize`, `tools/list`, `tools/call`,
-`notifications/initialized`) as implemented; resources, prompts, sampling,
-elicitation, completion, and logging are explicitly labeled *not implemented*.
-Unknown methods default to *not implemented*.
+The curriculum never overclaims. The capability-support matrix marks a method
+*implemented* only when the gateway truly serves it: `initialize`, `ping`,
+`tools/*`, `resources/*` (including subscribe/unsubscribe), `prompts/*`,
+`completion/complete`, and `logging/setLevel`. Server→client requests
+(`sampling/createMessage`, `elicitation/create`, `roots/list`) are labeled
+*partial* because the gateway only **relays** them to the upstream client,
+gated on the client's advertised capability — it is a conduit, not a provider,
+and never auto-approves. Notifications are *partial* too: recognized ones are
+handled/forwarded, unrecognized ones are intentionally dropped rather than
+blindly relayed. Unknown methods default to *not implemented*.
 
 ### The `learn` terminal viewer
 
