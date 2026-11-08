@@ -216,3 +216,102 @@ class TestPaginationConfig:
         )
         cfg = load_config(path)
         assert cfg.pagination.page_size == 7
+
+
+# -- Transport tagged union (downstream Streamable HTTP) ---------------------
+
+
+class TestServerTransportUnion:
+    def test_no_type_defaults_to_stdio(self):
+        """Backward compat: a server config without `type` is stdio."""
+        from mcp_baldr.config.models import StdioServerConfig
+
+        cfg = GatewayConfig.model_validate(
+            {"servers": [{"name": "legacy", "command": "python3", "args": ["x.py"]}]}
+        )
+        assert isinstance(cfg.servers[0], StdioServerConfig)
+        assert cfg.servers[0].type == "stdio"
+
+    def test_explicit_stdio_type(self):
+        from mcp_baldr.config.models import StdioServerConfig
+
+        cfg = GatewayConfig.model_validate(
+            {"servers": [{"type": "stdio", "name": "a", "command": "python3"}]}
+        )
+        assert isinstance(cfg.servers[0], StdioServerConfig)
+
+    def test_http_type(self):
+        from mcp_baldr.config.models import HttpServerConfig
+
+        cfg = GatewayConfig.model_validate(
+            {
+                "servers": [
+                    {
+                        "type": "http",
+                        "name": "remote",
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer tok"},
+                    }
+                ]
+            }
+        )
+        s = cfg.servers[0]
+        assert isinstance(s, HttpServerConfig)
+        assert s.url == "https://example.com/mcp"
+        assert s.headers["Authorization"] == "Bearer tok"
+
+    def test_mixed_stdio_and_http(self):
+        from mcp_baldr.config.models import HttpServerConfig, StdioServerConfig
+
+        cfg = GatewayConfig.model_validate(
+            {
+                "servers": [
+                    {"name": "local", "command": "python3"},
+                    {"type": "http", "name": "remote", "url": "http://localhost:9000/mcp"},
+                ]
+            }
+        )
+        assert isinstance(cfg.servers[0], StdioServerConfig)
+        assert isinstance(cfg.servers[1], HttpServerConfig)
+        assert len(cfg.enabled_servers()) == 2
+
+    def test_http_requires_url(self):
+        with pytest.raises(Exception, match="url"):
+            GatewayConfig.model_validate({"servers": [{"type": "http", "name": "x"}]})
+
+    @pytest.mark.parametrize("bad_url", ["ftp://nope", "example.com/mcp", "", "ws://x"])
+    def test_http_url_scheme_validated(self, bad_url):
+        with pytest.raises(Exception, match="url|URL"):
+            GatewayConfig.model_validate(
+                {"servers": [{"type": "http", "name": "x", "url": bad_url}]}
+            )
+
+    def test_unknown_transport_type_rejected(self):
+        with pytest.raises(Exception, match="type|discriminator|tag"):
+            GatewayConfig.model_validate({"servers": [{"type": "carrier_pigeon", "name": "x"}]})
+
+    def test_http_rejects_stdio_only_fields(self):
+        """An http entry carrying stdio-only keys (command) is rejected."""
+        with pytest.raises(Exception, match="command|extra"):
+            GatewayConfig.model_validate(
+                {
+                    "servers": [
+                        {"type": "http", "name": "x", "url": "http://a/mcp", "command": "python3"}
+                    ]
+                }
+            )
+
+    def test_direct_http_server_config_construction(self):
+        from mcp_baldr.config.models import HttpServerConfig
+
+        s = HttpServerConfig(type="http", name="h", url="https://a/mcp")
+        assert s.name == "h"
+        assert s.enabled is True
+        assert s.timeout == 30.0
+
+    def test_http_name_validation_shared(self):
+        """Name rules from the shared base apply to http configs too."""
+        with pytest.raises(Exception, match="name"):
+            GatewayConfig.model_validate(
+                {"servers": [{"type": "http", "name": "Bad-Name", "url": "http://a/mcp"}]}
+            )

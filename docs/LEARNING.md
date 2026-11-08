@@ -111,6 +111,23 @@ Here is a real excerpt (colors are shown only on a TTY; piping to a file yields 
 
 The direction label in each box header (`AI CLIENT ──► GATEWAY`, `GATEWAY ──► mock_a`, etc.) makes the four hops of the round trip explicit. Earlier in the same session you would also see `[GATEWAY READY]`, the `initialize` handshake, and the full `tools/list` aggregation.
 
+### Real-world case study: version negotiation in action
+
+When you inspect an `initialize` handshake with `--learn` — or run the HTTP test fixtures — you may notice an apparent mismatch between the version Baldr proposes and the version that comes back:
+
+```
+┌─ [GATEWAY ──► downstream]  initialize  ───────────────────────────────
+│ protocolVersion: "2026-07-28"     ← Baldr proposes its latest
+└───────────────────────────────────────────────────────────────────────
+┌─ [downstream ──► GATEWAY]  initialize result  ────────────────────────
+│ protocolVersion: "2025-11-25"     ← the server replies with its baseline
+└───────────────────────────────────────────────────────────────────────
+```
+
+**Why this happens.** This is MCP version negotiation working exactly as designed — not a bug. During `initialize`, the client *proposes* a protocol version (Baldr sends `types.LATEST_PROTOCOL_VERSION`, currently `2026-07-28`), and the **server** chooses which version it will actually speak and returns it in the result. The current `mcp` SDK's server runtime settles on `2025-11-25` as its stable baseline, so that is what comes back. Baldr does not force the latest version or reject the downgrade: it records whatever the server returns (`transport.server_protocol_version`) and routes JSON-RPC frames transparently on the negotiated version.
+
+The takeaway: version negotiation is **per-downstream and server-chosen**. A different downstream could negotiate `2026-07-28`, and Baldr would record that instead — each server's negotiated version is captured independently in the capability registry. Because the message *shapes* are identical across these revisions for the methods Baldr proxies, aggregation works regardless of which version any individual downstream lands on.
+
 ### Configuration
 
 ```yaml

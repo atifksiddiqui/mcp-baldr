@@ -4,6 +4,47 @@ All notable development milestones for Baldr (mcp-baldr) are recorded here,
 organized by the build phase in which they landed. The project is
 pre-1.0; versions will be tagged as the API stabilizes.
 
+## Phase 8 — Downstream Streamable HTTP Transport
+
+Baldr can now aggregate **remote** MCP servers over the MCP 2026-07-28
+Streamable HTTP binding, alongside local stdio subprocesses. The stdio path
+and `--learn` educational mode are unchanged.
+
+- `DownstreamTransport` interface extracted; `StdioTransport` implements it and
+  the gateway now depends on the interface, not a concrete transport
+- Config is a discriminated union on `type`: `stdio` (default, so existing
+  configs are untouched) or `http` (`HttpServerConfig` with `url` + static
+  `headers` for auth)
+- `HttpTransport` built on the SDK's `mcp.client.streamable_http` +
+  `ClientSession` (no new top-level dependency); proxies tools, resources,
+  prompts, completion, logging, and ping
+- The configured `timeout` is honored (HTTP client timeout + SDK session read
+  timeout), so a slow/unreachable server fails fast instead of hanging
+- `examples/http_mock_server.py` — a real Streamable HTTP mock server
+  (`MCPServer`) for honest end-to-end tests
+- HTTP transport unit + gateway-with-HTTP-downstream integration tests; mixed
+  stdio+http aggregation verified
+
+Deferred for the HTTP path (tracked in the README Roadmap), not regressions —
+these exist and work on the stdio transport:
+
+- Server→client requests (sampling / elicitation / roots), which 2026-07-28
+  carries via Multi Round-Trip Requests (MRTR, SEP-2322) rather than standalone
+  requests
+- Live change notifications via a `subscriptions/listen` long-lived SSE stream
+- Authentication beyond static headers (e.g. OAuth)
+- Backward compatibility with the legacy HTTP+SSE transport and the
+  2025-03-26…2025-11-25 Streamable HTTP revisions (session-id, standalone GET
+  SSE, resumable streams)
+- Proactive connection-health detection: a crashed/unreachable HTTP downstream
+  is caught reactively on the next request, not auto-unregistered via a health
+  monitor the way a crashed stdio subprocess is
+- Per-request timeout override (the configured `timeout` applies session-wide;
+  a per-call override is accepted but not yet plumbed through the SDK session)
+
+Also on the roadmap: an **upstream** Streamable HTTP transport (AI clients
+connecting to Baldr over HTTP; today Baldr's upstream interface is stdio only).
+
 ## Phase 7 — Full MCP Protocol Support
 
 - Capability negotiation + honest upstream capability aggregate (`CapabilityRegistry`)

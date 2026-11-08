@@ -28,12 +28,18 @@ import asyncio
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from mcp import types
 
 from mcp_baldr.config.models import StdioServerConfig
+from mcp_baldr.transports.base import (
+    CrashCallback,
+    DownstreamTransport,
+    NotificationCallback,
+    RequestCallback,
+    TransportError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,26 +48,22 @@ PROTOCOL_VERSION = types.LATEST_PROTOCOL_VERSION
 CLIENT_INFO: dict[str, str] = {"name": "mcp-baldr", "version": "0.1.0"}
 DEFAULT_TIMEOUT: float = 30.0
 
-#: Type for the crash callback: ``(server_name, returncode) -> Awaitable[None]``.
-CrashCallback = Callable[[str, int], Awaitable[None]]
-
-#: Type for the notification callback invoked when the downstream server sends
-#: a server-originated notification: ``(server_name, method, params) -> Awaitable[None]``.
-NotificationCallback = Callable[[str, str, dict[str, Any]], Awaitable[None]]
-
-#: Type for the request callback invoked when the downstream server sends a
-#: server-originated *request* (a message with both an ``id`` and a
-#: ``method``).  The callback receives ``(server_name, request_id, method,
-#: params)`` and is responsible for producing a response via
-#: :meth:`StdioTransport.send_response` or :meth:`send_error_response`.
-RequestCallback = Callable[[str, "int | str", str, dict[str, Any]], Awaitable[None]]
+# Callback type aliases live in ``transports.base`` and are re-exported here
+# for backward compatibility with existing imports from this module.
+__all__ = [
+    "CrashCallback",
+    "NotificationCallback",
+    "RequestCallback",
+    "StdioTransport",
+    "StdioTransportError",
+]
 
 
-class StdioTransportError(Exception):
+class StdioTransportError(TransportError):
     """Raised when the stdio transport encounters an unrecoverable error."""
 
 
-class StdioTransport:
+class StdioTransport(DownstreamTransport):
     """Manages a single downstream stdio MCP server subprocess.
 
     Handles process lifecycle (spawn, monitor, terminate), JSON-RPC 2.0

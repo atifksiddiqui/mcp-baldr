@@ -84,6 +84,15 @@ Pagination (Stage 8):
   *aggregate* of all downstream items with an opaque, stable cursor (see
   :mod:`mcp_baldr.protocol.pagination`).  The page size comes from config.
   A malformed or stale cursor is rejected with an invalid-params error.
+
+Pluggable downstream transports:
+
+- The gateway depends on the :class:`~mcp_baldr.transports.base.DownstreamTransport`
+  interface rather than any concrete transport, so new bindings can be added
+  without changing routing, registries, or the upstream stdio server loop.
+  A downstream server's ``type`` selects its transport: ``stdio`` (local
+  subprocess, the default) or ``http`` (remote MCP server over the 2026-07-28
+  Streamable HTTP binding).
 """
 
 from __future__ import annotations
@@ -100,6 +109,7 @@ from typing import Any
 from mcp import types
 
 from mcp_baldr.config import load_config
+from mcp_baldr.config.models import HttpServerConfig, StdioServerConfig
 from mcp_baldr.educational.inspector import ProtocolInspector
 from mcp_baldr.gateway.subscription_manager import SubscriptionManager
 from mcp_baldr.learning.event_collector import EventCollector
@@ -118,7 +128,13 @@ from mcp_baldr.registry.resource_registry import ResourceRegistry
 from mcp_baldr.registry.tool_registry import ToolRegistry
 from mcp_baldr.routing.router import MethodNotFoundError as RouterMethodNotFound
 from mcp_baldr.routing.router import RequestRouter
-from mcp_baldr.transports.stdio import StdioTransport, StdioTransportError
+from mcp_baldr.transports import (
+    DownstreamTransport,
+    HttpTransport,
+    StdioTransport,
+    StdioTransportError,
+    TransportError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,12 +205,12 @@ ERR_INTERNAL = -32603
 class Gateway:
     """Multi-server MCP gateway.
 
-    Manages downstream :class:`StdioTransport` instances, aggregates their
-    tools, resources, and prompts, tracks each downstream's negotiated
-    capabilities, dispatches requests through a unified :class:`RequestRouter`,
-    propagates server-originated notifications upstream, relays server→client
-    requests to the upstream client, and exposes a unified MCP server interface
-    to AI clients via stdio.
+    Manages downstream :class:`~mcp_baldr.transports.base.DownstreamTransport`
+    instances, aggregates their tools, resources, and prompts, tracks each
+    downstream's negotiated capabilities, dispatches requests through a unified
+    :class:`RequestRouter`, propagates server-originated notifications
+    upstream, relays server→client requests to the upstream client, and
+    exposes a unified MCP server interface to AI clients via stdio.
 
     Crash recovery and clean shutdown are handled automatically.
     """
@@ -208,7 +224,7 @@ class Gateway:
         self.prompts = PromptRegistry()
         self.capabilities = CapabilityRegistry()
         self.subscriptions = SubscriptionManager()
-        self.transports: dict[str, StdioTransport] = {}
+        self.transports: dict[str, DownstreamTransport] = {}
         self._restart_counts: dict[str, int] = {}
         # Last log level requested by the upstream client (forwarded to new
         # downstreams on restart so they match the client's chosen verbosity).
@@ -263,6 +279,20 @@ class Gateway:
             }
         )
 
+    @staticmethod
+    def _make_transport(
+        server_config: StdioServerConfig | HttpServerConfig,
+    ) -> DownstreamTransport:
+        """Construct the transport for a downstream server by its ``type``.
+
+        ``stdio`` → local subprocess (:class:`StdioTransport`); ``http`` →
+        remote Streamable HTTP server (:class:`HttpTransport`).  The gateway
+        thereafter uses only the :class:`DownstreamTransport` interface.
+        """
+        if isinstance(server_config, HttpServerConfig):
+            return HttpTransport(server_config)
+        return StdioTransport(server_config)
+
     # -- Lifecycle ------------------------------------------------------------
 
     async def start(self) -> None:
@@ -273,7 +303,7 @@ class Gateway:
         )
 
         for server_config in self.config.enabled_servers():
-            transport = StdioTransport(server_config)
+            transport = self._make_transport(server_config)
             transport.set_crash_callback(self._on_transport_crash)
             transport.set_notification_callback(self._on_downstream_notification)
             transport.set_request_callback(self._on_downstream_request)
@@ -316,7 +346,7 @@ class Gateway:
                 },
             )
 
-    async def _discover_server(self, name: str, transport: StdioTransport) -> None:
+    async def _discover_server(self, name: str, transport: DownstreamTransport) -> None:
         """Discover and register a downstream server's capabilities.
 
         Only capabilities the server actually advertises are queried, so a
@@ -344,7 +374,7 @@ class Gateway:
                 tmpl_result = await transport.send_request("resources/templates/list", {})
                 templates = tmpl_result.get("resourceTemplates", [])
                 self.resources.register_server_templates(name, templates)
-            except StdioTransportError:
+            except TransportError:
                 logger.debug(
                     "Server does not implement resources/templates/list",
                     extra={"server": name},
@@ -372,7 +402,7 @@ class Gateway:
         if self._log_level is not None and "logging" in caps:
             try:
                 await transport.send_request("logging/setLevel", {"level": self._log_level})
-            except StdioTransportError:
+            except TransportError:
                 logger.debug(
                     "Server rejected replayed logging/setLevel",
                     extra={"server": name, "level": self._log_level},
@@ -408,17 +438,23 @@ class Gateway:
         This runs in a separate task spawned by the transport's monitor,
         so it can safely call ``restart()`` (which calls ``stop()`` →
         cancels the monitor task) without deadlock.
+
+        Auto-restart settings (``auto_restart`` / ``max_restarts``) exist only
+        on stdio server configs; HTTP configs are read with safe defaults
+        (no auto-restart) via ``getattr`` so the handler is transport-agnostic.
         """
         transport = self.transports.get(server_name)
         if transport is None:
             return
 
         server_config = next((s for s in self.config.servers if s.name == server_name), None)
+        auto_restart = bool(getattr(server_config, "auto_restart", False))
+        max_restarts = int(getattr(server_config, "max_restarts", 0))
 
         if (
             server_config
-            and server_config.auto_restart
-            and self._restart_counts.get(server_name, 0) < server_config.max_restarts
+            and auto_restart
+            and self._restart_counts.get(server_name, 0) < max_restarts
         ):
             self._restart_counts[server_name] = self._restart_counts.get(server_name, 0) + 1
             attempt = self._restart_counts[server_name]
@@ -429,7 +465,7 @@ class Gateway:
                     "server": server_name,
                     "returncode": returncode,
                     "restart_attempt": attempt,
-                    "max_restarts": server_config.max_restarts,
+                    "max_restarts": max_restarts,
                 },
             )
 
@@ -469,7 +505,7 @@ class Gateway:
                     "server": server_name,
                     "returncode": returncode,
                     "restarts": self._restart_counts.get(server_name, 0),
-                    "auto_restart": server_config.auto_restart if server_config else False,
+                    "auto_restart": auto_restart,
                 },
             )
             self._unregister_everywhere(server_name)
@@ -550,7 +586,7 @@ class Gateway:
                     "Ignoring unsupported downstream notification",
                     extra={"server": server_name, "method": method},
                 )
-        except StdioTransportError as exc:
+        except TransportError as exc:
             logger.warning(
                 "Failed to handle downstream notification",
                 extra={"server": server_name, "method": method, "error": str(exc)},
@@ -635,7 +671,7 @@ class Gateway:
 
         try:
             result = await self._send_client_request(method, params)
-        except StdioTransportError as exc:
+        except TransportError as exc:
             # Relay failed (client disconnected / timed out).  Report back.
             await transport.send_error_response(request_id, ERR_INTERNAL, str(exc))
             return
@@ -714,7 +750,7 @@ class Gateway:
         Raises:
             ToolNotFoundError: If the tool is not registered.
             ServerNotAvailableError: If the owning server is not running.
-            StdioTransportError: If the downstream server returns an error
+            TransportError: If the downstream server returns an error
                 or the request times out.
         """
         resolved = self.registry.resolve(namespaced_name)
@@ -1001,7 +1037,7 @@ class Gateway:
                 continue
             try:
                 await transport.send_request("logging/setLevel", {"level": level})
-            except StdioTransportError as exc:
+            except TransportError as exc:
                 logger.warning(
                     "Downstream rejected logging/setLevel",
                     extra={"server": server_name, "level": level, "error": str(exc)},
@@ -1014,7 +1050,7 @@ class Gateway:
 
     # -- Routing helpers ------------------------------------------------------
 
-    def _require_running(self, server_name: str) -> StdioTransport:
+    def _require_running(self, server_name: str) -> DownstreamTransport:
         """Return the transport for *server_name* or raise if unavailable."""
         transport = self.transports.get(server_name)
         if transport is None or not transport.is_running:
@@ -1160,7 +1196,7 @@ class Gateway:
             except ServerNotAvailableError as exc:
                 self._record_error(msg_id, ERR_INTERNAL, str(exc))
                 self._send_error(msg_id, ERR_INTERNAL, str(exc))
-            except StdioTransportError as exc:
+            except TransportError as exc:
                 self._record_error(msg_id, ERR_INTERNAL, str(exc))
                 self._send_error(msg_id, ERR_INTERNAL, str(exc))
             except Exception as exc:

@@ -96,8 +96,14 @@ class TestCrashDetection:
         # Send a tools/call request (slow server sleeps 10s before responding)
         request_task = asyncio.create_task(transport.call_tool("slow_tool", {}))
 
-        # Give it a moment to send the request
-        await asyncio.sleep(0.1)
+        # Wait deterministically until the request is actually in flight (its
+        # future is registered as pending) rather than relying on a fixed
+        # sleep, which can race under heavy load.
+        for _ in range(100):
+            if transport._pending:
+                break
+            await asyncio.sleep(0.02)
+        assert transport._pending, "request was never sent before kill"
 
         # Kill the subprocess mid-request
         transport.process.kill()

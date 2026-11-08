@@ -1,7 +1,12 @@
 """Shared pytest fixtures and constants for the MCP Gateway test suite."""
 
+from __future__ import annotations
+
+import socket
+import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -13,6 +18,7 @@ from mcp_baldr.config.models import StdioServerConfig
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MOCK_SERVER_PATH = str(PROJECT_ROOT / "examples" / "mock_server.py")
 SLOW_SERVER_PATH = str(PROJECT_ROOT / "examples" / "slow_server.py")
+HTTP_MOCK_SERVER_PATH = str(PROJECT_ROOT / "examples" / "http_mock_server.py")
 
 
 # -- Config helpers ------------------------------------------------------------
@@ -97,6 +103,81 @@ def write_two_server_config(
           format: text
         """
     return write_gateway_config(tmp_path, yaml)
+
+
+# -- HTTP mock server helper (Streamable HTTP downstream) ---------------------
+
+
+def _free_port() -> int:
+    """Return an OS-assigned free TCP port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 15.0) -> None:
+    """Block until *host:port* accepts a TCP connection, or raise on timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            try:
+                s.connect((host, port))
+                return
+            except OSError:
+                time.sleep(0.1)
+    raise TimeoutError(f"HTTP mock server did not open {host}:{port} within {timeout}s")
+
+
+class HttpMockServer:
+    """A spawned Streamable HTTP mock MCP server for integration tests.
+
+    Starts ``examples/http_mock_server.py`` as a subprocess on a free local
+    port and exposes its ``/mcp`` endpoint URL.  Used as a context manager so
+    the process is always torn down::
+
+        with HttpMockServer() as srv:
+            cfg = HttpServerConfig(type="http", name="remote", url=srv.url)
+            ...
+    """
+
+    def __init__(self, server_name: str | None = None):
+        self.host = "127.0.0.1"
+        self.port = _free_port()
+        self.url = f"http://{self.host}:{self.port}/mcp"
+        self._server_name = server_name
+        self._proc: subprocess.Popen | None = None
+
+    def __enter__(self) -> HttpMockServer:
+        env = None
+        if self._server_name is not None:
+            import os
+
+            env = {**os.environ, "MOCK_SERVER_NAME": self._server_name}
+        self._proc = subprocess.Popen(
+            [
+                sys.executable,
+                HTTP_MOCK_SERVER_PATH,
+                "--host",
+                self.host,
+                "--port",
+                str(self.port),
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _wait_for_port(self.host, self.port)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self._proc is not None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait()
 
 
 # -- Fixtures ------------------------------------------------------------------
